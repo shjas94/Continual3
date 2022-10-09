@@ -347,11 +347,11 @@ if __name__ == "__main__":
     parser.add_argument('--optimizer', type=str, default='adam', choices=('adam', 'adamw', 'sgd'))
     parser.add_argument('--lr', type=float, default=1e-04)
     parser.add_argument('--criterion', type=str, default='nll_energy', choices=('nll_energy', 'contrastive_divergence'))
-    parser.add_argument('--epoch', type=int, default=3)
+    parser.add_argument('--epoch', type=int, default=2)
     parser.add_argument('--use_memory', action='store_true', default=True, help='use memory buffer for CIL if True')
-    parser.add_argument('--memory_option', type=str, default='random_sample', choices=('random_sample', 'low_energy', \
+    parser.add_argument('--memory_option', type=str, default='low_energy', choices=('random_sample', 'low_energy', \
                                                                                        'high_energy', 'min_score', 'max_score',\
-                                                                                       'confused_pred', 'representation', 'bin'))
+                                                                                       'confused_pred', 'representation', 'bin_based'))
     parser.add_argument('--img_size', type=int, default=32)
     parser.add_argument('--num_channels', type=int, default=3)
     parser.add_argument('--memory_size', type=int, default=20)

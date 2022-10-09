@@ -35,13 +35,14 @@ class Coreset_Manager(object):
                 for l in cifar_labels]
             
     def _generate_and_evaluate_coreset(self, args, model, device, memory_over_tasks_dataset):
-        memory_energy = torch.empty(0)
         for cur_class, cl in tqdm(enumerate(self.cl_list[-self.num_classes_per_tasks:]), desc="Getting Coreset"):
             index = (self.y == torch.tensor(cl)).nonzero(as_tuple=True)
             cur_x = self.x[index]
             cur_y = self.y[index]
             cur_energy = self.energy[index]
             # memory_energy = torch.empty(0) # 이걸 왜 여기서 선언하지?
+            memory_energy = torch.empty(0)
+
             if args.memory_option == "random_sample":
                 memory_energy, memory_over_tasks_dataset = self._random_sample(args, cur_x, cur_y, cur_energy, memory_energy, memory_over_tasks_dataset)
             elif args.memory_option == "min_score":
@@ -90,7 +91,7 @@ class Coreset_Manager(object):
         else False
         '''
         idx = torch.topk(cur_energy, args.memory_size, dim=0, largest=energy_mode)[1]
-        memory_x = cur_x[idx].view(args.img_size)
+        memory_x = cur_x[idx].view((-1, args.num_channels, args.img_size, args.img_size))
         memory_y = cur_y[idx]
         memory_dataset = Coreset_Dataset(memory_x, memory_y)
         mem_energy = cur_energy[idx]
@@ -98,14 +99,14 @@ class Coreset_Manager(object):
         memory_over_tasks_dataset = ConcatDataset([memory_over_tasks_dataset, memory_dataset])
         return memory_energy, memory_over_tasks_dataset
     
-    def _calculate_score(args, model, device, cur_x, cur_y):
+    def _calculate_score(self, args, model, device, cur_x, cur_y):
         score_tensor = torch.empty(0)
         for i in range(len(cur_x)):
-            tmp_x = cur_x[i,:,:,:].view(args.img_size).to(device)
+            tmp_x = cur_x[i,:,:,:].view((-1, args.num_channels, args.img_size, args.img_size)).to(device)
             tmp_y = cur_y[i].view(-1).long().to(device)
-            tmp_x.require_grad = True
-            e = model(tmp_x, tmp_y)
-            e.backward
+            tmp_x.requires_grad = True
+            e = model(tmp_x, tmp_y)[0]
+            e.backward()
             score = tmp_x.grad
             sum = torch.abs(torch.mean(score)) + torch.var(score)
             score_tensor = torch.cat((score_tensor, sum.detach().cpu().view(-1)))
@@ -139,7 +140,7 @@ class Coreset_Manager(object):
     def _bin_based(self, args, cur_x, cur_y, cur_energy, memory_energy, memory_over_tasks_dataset):
         flatten_energy = cur_energy.view(-1)
         _, bin_idx = torch.sort(flatten_energy)
-        bins = torch.linspace(0, len(bin_idx), args.memory_size).int()
+        bins = torch.linspace(0, len(bin_idx), args.memory_size).long()
         bins[-1] = bins[-1]-1
         memory_x = cur_x[bin_idx][bins]
         memory_y = cur_y[bin_idx][bins]
