@@ -1,25 +1,27 @@
 
 import os
 import yaml
+from tqdm import tqdm
 import torch
 from torch.utils.data import ConcatDataset
 import numpy as np
 import pandas as pd
 from scipy.stats import wasserstein_distance, energy_distance
-from dataset import Coreset_Dataset
+from modules.dataset import Coreset_Dataset
 
 class Coreset_Manager(object):
     def __init__(self, model, args, memory, num_classes_per_tasks, memory_over_tasks_dataset, device):
-        self.memory_energy, self.coresets = self._generate_and_evaluate_coreset(args, model, device, memory_over_tasks_dataset)
+        self.x, self.y, self.energy = memory
+        self.num_classes_per_tasks = num_classes_per_tasks
+        self.cl_list = sorted(list(set(list(self.y.numpy()))))
         self.available_memory_options = ['bin_based', 'random_sample', 'low_energy', 'high_energy', 'min_score', 'max_score', 'confused_pred']
         self.classes = self._get_class_name(args)
         self.wasserstein_dist_df = pd.DataFrame(index=self.available_memory_options, columns=self.classes)
         self.energy_dist_df = pd.DataFrame(index=self.available_memory_options, columns=self.classes)
+        self.memory_energy, self.coresets = self._generate_and_evaluate_coreset(args, model, device, memory_over_tasks_dataset)
         
-        self.x, self.y, self.energy = memory
-        self.num_classes_per_tasks = num_classes_per_tasks
-        self.cl_list = list(set(list(self.y.numpy()))).sort()
-    
+        
+        
     def _get_class_name(self, args):
         labels = []
         with open(os.path.join('utils','labels.yml')) as outfile:
@@ -34,8 +36,8 @@ class Coreset_Manager(object):
             
     def _generate_and_evaluate_coreset(self, args, model, device, memory_over_tasks_dataset):
         memory_energy = torch.empty(0)
-        for cur_class, cl in enumerate(self.cl_list[-1*self.num_classes_per_tasks]):
-            index = (self.y == torch.tensor(cl)).nonzero(as_tuple=True)[0]
+        for cur_class, cl in tqdm(enumerate(self.cl_list[-self.num_classes_per_tasks:]), desc="Getting Coreset"):
+            index = (self.y == torch.tensor(cl)).nonzero(as_tuple=True)
             cur_x = self.x[index]
             cur_y = self.y[index]
             cur_energy = self.energy[index]
@@ -68,8 +70,8 @@ class Coreset_Manager(object):
                 raise NotImplementedError("Not Implemented yet")
             else:
                 raise NotImplementedError("Not a valid option for coreset selection")
-            self.wasserstein_dist_df[cur_class][args.memory_option] = self._calculate_wasserstein_distance(cur_energy, memory_energy)
-            self.energy_dist_df[cur_class][args.memory_option] = self._calulate_energy_distance(cur_energy, memory_energy)
+            self.wasserstein_dist_df[self.classes[cur_class]][args.memory_option] = self._calculate_wasserstein_distance(cur_energy, memory_energy)
+            self.energy_dist_df[self.classes[cur_class]][args.memory_option] = self._calulate_energy_distance(cur_energy, memory_energy)
         return memory_energy, memory_over_tasks_dataset
     
     def _random_sample(self, args, cur_x, cur_y, cur_energy, memory_energy, memory_over_tasks_dataset):

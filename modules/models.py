@@ -455,7 +455,7 @@ def get_norm(norm):
     elif norm == 'group_norm':
         return nn.GroupNorm
     else:
-        return Identity
+        return Identity()
 
 
 def get_model(model_name):

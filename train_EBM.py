@@ -31,7 +31,11 @@ def trainer(args,
     model.train()
     for p in model.parameters():
         p.require_grad = True
-    
+    if task_num != 1:
+        temp_task_class_set = task_class_set[0]
+        for i in range(1, len(task_class_set)):
+            temp_task_class_set = temp_task_class_set.union(task_class_set[i])
+        task_class_set = [temp_task_class_set]
     for e in range(args.epoch):
         total_class_set, train_accs, _, memory_in_epoch = train_one_epoch(args=args,
                                                          epoch=e,
@@ -90,7 +94,7 @@ def train_one_epoch(args,
                 y = sample[2]+(10*(task_num-1))
                 y = y.to(device)
         
-        if args.use_memory and not memory_over_tasks_dataset:
+        if args.use_memory and memory_over_tasks_dataset:
             memory_loader = DataLoader(dataset=memory_over_tasks_dataset,
                                        shuffle=True,
                                        batch_size=args.batch_size)
@@ -125,7 +129,7 @@ def train_one_epoch(args,
                 neg_energy = torch.min(other_energy, dim=1, keepdim=True)[0]
                 memory_energy = torch.cat((memory_energy, true_energy-neg_energy))
             else:
-                memory_energy = torch.cat((memory_energy, model(x, y).detach().cpu()))
+                memory_energy = torch.cat((memory_energy, model(x, y)[0].detach().cpu()))
         loss.backward()
         optimizer.step()
         
@@ -149,7 +153,9 @@ def test_total(args,
                model, 
                loaders, 
                total_class_set, 
-               logger=None):
+               task_num,
+               epoch,
+               acc_matrix):
     
     task_infos = IntermediateInfos()
     for i,loader in enumerate(loaders):
@@ -330,23 +336,24 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--data_root', type=str, default='./data')
     parser.add_argument('--fig_root', type=str, default='./asset')
-    parser.add_argument('--dataset', type=str, default='splitted_mnist', choices=('splitted_mnist', 'permuted_mnist', 'cifar10','oxford_pet', 'cifar100'))
+    parser.add_argument('--dataset', type=str, default='cifar10', choices=('splitted_mnist', 'permuted_mnist', 'cifar10','oxford_pet', 'cifar100'))
     parser.add_argument('--num_classes', type=int, default=10)
     parser.add_argument('--num_tasks', type=int, default=5)
     parser.add_argument('--batch_size', type=int, default=64)
     parser.add_argument('--test_batch_size', type=int, default=64)
     parser.add_argument('--cuda', default=True, action='store_true')
     parser.add_argument('--num_workers', type=int, default=3)
-    parser.add_argument('--model', type=str, default='ebm_mnist', choices=('beginning', 'middle', 'end', 'ebm_mnist', 'end_oxford'))
+    parser.add_argument('--model', type=str, default='resnet_34', choices=('beginning', 'middle', 'end', 'ebm_mnist', 'end_oxford', 'resnet_18', 'resnet_34', 'resnet_50', 'resnet_101', 'resnet_152'))
     parser.add_argument('--optimizer', type=str, default='adam', choices=('adam', 'adamw', 'sgd'))
     parser.add_argument('--lr', type=float, default=1e-04)
     parser.add_argument('--criterion', type=str, default='nll_energy', choices=('nll_energy', 'contrastive_divergence'))
-    parser.add_argument('--epoch', type=int, default=50)
+    parser.add_argument('--epoch', type=int, default=3)
     parser.add_argument('--use_memory', action='store_true', default=True, help='use memory buffer for CIL if True')
     parser.add_argument('--memory_option', type=str, default='random_sample', choices=('random_sample', 'low_energy', \
                                                                                        'high_energy', 'min_score', 'max_score',\
                                                                                        'confused_pred', 'representation', 'bin'))
     parser.add_argument('--img_size', type=int, default=32)
+    parser.add_argument('--num_channels', type=int, default=3)
     parser.add_argument('--memory_size', type=int, default=20)
     parser.add_argument('--save_confusion_fig', default=True, action='store_true')
     parser.add_argument('--save_matrices', default=True, action='store_true')
