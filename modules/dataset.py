@@ -2,7 +2,7 @@ import os
 import yaml
 from sklearn.model_selection import train_test_split
 from tqdm import tqdm
-from torchvision.datasets import CIFAR10, CIFAR100, MNIST
+from torchvision.datasets import CIFAR10, CIFAR100, MNIST, ImageFolder
 import torchvision.transforms as transforms
 import torch.utils.data as data
 from torch.utils.data import DataLoader
@@ -22,8 +22,10 @@ def _get_permuted_img(img, permutation):
 
 def get_transforms(args):
     if args.dataset == 'splitted_mnist':
-        return transforms.Compose([transforms.ToTensor(),
-                                  transforms.Normalize((0.1307,), (0.3081,))])
+        return transforms.Compose([
+                                 transforms.ToTensor(),
+                                 transforms.Normalize((0.1307,), (0.3081,))
+                                 ])
     elif args.dataset == 'permuted_mnist':
         permutation = [np.random.permutation(28**2) for _ in range(args.num_tasks)]
         return transforms.Compose([
@@ -39,9 +41,17 @@ def get_transforms(args):
     elif args.dataset == 'oxford_pet':
         return transforms.Compose([
                                  transforms.ToTensor(),
-                                 transforms.Resize((128, 128)), # To Do : img size argparse로 입력받기
+                                 transforms.Resize((args.img_size, args.img_size)),
                                  transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
                                  ])
+    elif args.dataset == 'tiny_imagenet':
+        return transforms.Compose([
+                                 transforms.ToTensor(),
+                                 transforms.Resize((args.img_size, args.img_size)),
+                                 transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
+                                 ])
+    else:
+        raise NotImplementedError('Wrong Dataset Name')
     
 class Oxford_Pet(data.Dataset):
     def __init__(self, root, data_path, transforms=None, train=True) -> None:
@@ -102,6 +112,7 @@ class Oxford_Pet(data.Dataset):
         else:
             return len(self.test_path) 
 
+
 class Coreset_Dataset(data.Dataset):
     def __init__(self, data, targets, transform=None):
         self.data = data
@@ -135,59 +146,67 @@ def get_dataset(args,
     transform = get_transforms(args)
     if dataset == 'splitted_mnist':
         train_dataset = MNIST(root=root, 
-                        train=True, 
-                        transform=transform, 
-                        download=True)
+                              train=True, 
+                              transform=transform, 
+                              download=True)
         
-        test_dataset = MNIST(root=root, 
-                        train=False, 
-                        transform=transform, 
-                        download=True)
+        test_dataset  = MNIST(root=root, 
+                              train=False, 
+                              transform=transform, 
+                              download=True)
         
     elif dataset == 'permuted_mnist':
         train_dataset = MNIST(root=root, 
-                        train=True, 
-                        transform=transform,
-                        download=True)
+                              train=True, 
+                              transform=transform,
+                              download=True)
         
-        test_dataset = MNIST(root=root, 
-                        train=False, 
-                        transform=transform,
-                        download=True)
+        test_dataset  = MNIST(root=root, 
+                              train=False, 
+                              transform=transform,
+                              download=True)
         
     elif dataset == 'cifar10':
         train_dataset = CIFAR10(root=root, 
-                          train=True, 
-                          transform=transform, 
-                          download=True)
+                                train=True, 
+                                transform=transform, 
+                                download=True)
         
-        test_dataset = CIFAR10(root=root, 
-                          train=False, 
-                          transform=transform, 
-                          download=True)
+        test_dataset  = CIFAR10(root=root, 
+                                train=False, 
+                                transform=transform, 
+                                download=True)
         
     elif dataset == 'cifar100':
         train_dataset = CIFAR100(root=root, 
-                           train=True, 
-                           transform=transform, 
-                           download=True)
-        test_dataset = CIFAR100(root=root, 
-                           train=False, 
-                           transform=transform, 
-                           download=True)
+                                 train=True, 
+                                 transform=transform, 
+                                 download=True)
+        test_dataset  = CIFAR100(root=root, 
+                                 train=False, 
+                                 transform=transform, 
+                                 download=True)
     
     elif dataset == 'oxford_pet':
         train_dataset = Oxford_Pet(root=root,
-                             data_path='images/',
-                             transforms=transform,
-                             train=True)
-        test_dataset = Oxford_Pet(root=root,
-                             data_path='images/',
-                             transforms=transform,
-                             train=False)
+                                   data_path='images/',
+                                   transforms=transform,
+                                   train=True)
+        test_dataset  = Oxford_Pet(root=root,
+                                   data_path='images/',
+                                   transforms=transform,
+                                   train=False)
     
+    elif dataset == 'tiny_imagenet':
+        train_dataset = ImageFolder(root=os.path.join(root, 'tiny-imagenet-200', 'train'), 
+                                    transform=transform,
+                                    target_transform=None)
+        test_dataset  = ImageFolder(root=os.path.join(root, 'tiny-imagenet-200', 'val'),
+                                    transform=transform,
+                                    target_transform=None)
     else:
-        raise NotImplementedError
+        raise NotImplementedError('Wrong Dataset Name!!!')
+    
     return train_dataset, test_dataset
 
 
@@ -204,7 +223,7 @@ def split_dataset(dataset, train_data, test_data, num_classes, num_tasks):
             test_data_splitted[test_data[i][2]].append(test_data[i], colour='green', ncols=15, dynamic_ncols=True)
         print(f"Excluded {num_remainders} classes")
         return train_data_splitted, test_data_splitted
-    elif dataset == 'splitted_mnist' or dataset == 'cifar10' or dataset == 'cifar100':
+    elif dataset == 'splitted_mnist' or dataset == 'cifar10' or dataset == 'cifar100' or dataset == 'tiny_imagenet':
         train_data_splitted = [[] for _ in range(num_classes)]
         test_data_splitted = [[] for _ in range(num_classes)]
         print("=================Splitting Train Dataset=================")
@@ -263,7 +282,7 @@ def make_tasks(dataset, img_size, num_channels, train_data_splitted, test_data_s
             class_counter+=(num_classes//num_tasks - 1)
         return train_tasks, test_tasks, task_class_sets
     
-    elif dataset == 'splitted_mnist' or dataset == 'cifar10' or dataset == 'cifar100':
+    elif dataset == 'splitted_mnist' or dataset == 'cifar10' or dataset == 'cifar100' or dataset == 'tiny_imagenet':
         train_tasks = []
         test_tasks = []
         task_class_sets = []

@@ -336,7 +336,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--data_root', type=str, default='./data')
     parser.add_argument('--fig_root', type=str, default='./asset')
-    parser.add_argument('--dataset', type=str, default='cifar10', choices=('splitted_mnist', 'permuted_mnist', 'cifar10','oxford_pet', 'cifar100'))
+    parser.add_argument('--dataset', type=str, default='cifar10', choices=('splitted_mnist', 'permuted_mnist', 'cifar10','oxford_pet', 'cifar100', 'tiny_imagenet'))
     parser.add_argument('--num_classes', type=int, default=10)
     parser.add_argument('--num_tasks', type=int, default=5)
     parser.add_argument('--batch_size', type=int, default=64)
