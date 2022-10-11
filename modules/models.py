@@ -12,9 +12,9 @@ class ResidualBlock(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size, padding, stride=1, norm='none'):
         super(ResidualBlock, self).__init__()
         self.conv1 = nn.Conv2d(in_channels, in_channels, kernel_size, padding=padding, stride=stride)
-        self.norm1 = get_norm(norm)
+        self.norm1 = get_norm(norm)(in_channels)
         self.conv2 = nn.Conv2d(in_channels, out_channels, kernel_size, padding=1)
-        self.norm2 = get_norm(norm)
+        self.norm2 = get_norm(norm)(out_channels)
         self.proj = nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=stride) if in_channels != out_channels else Identity()
     def forward(self, x):
         z = F.leaky_relu(self.norm1(self.conv1(x)))
@@ -26,11 +26,11 @@ class BottleNeckBlock(nn.Module):
     def __init__(self, in_channels, mid_channels, out_channels, kernel_size, padding, stride=1, norm='none'):
         super(BottleNeckBlock, self).__init__()
         self.conv1 = nn.Conv2d(in_channels, mid_channels, kernel_size=1, stride=stride)
-        self.norm1 = get_norm(norm)
+        self.norm1 = get_norm(norm)(mid_channels)
         self.conv2 = nn.Conv2d(mid_channels, mid_channels, kernel_size=kernel_size, padding=padding)
-        self.norm2 = get_norm(norm)
+        self.norm2 = get_norm(norm)(mid_channels)
         self.conv3 = nn.Conv2d(mid_channels, out_channels, kernel_size=1)
-        self.norm3 = get_norm(norm)
+        self.norm3 = get_norm(norm)(out_channels)
         self.proj = nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=stride) if in_channels != out_channels else Identity()
     def forward(self, x):
         z = F.leaky_relu(self.norm1(self.conv1(x)))
@@ -61,9 +61,9 @@ class ResNet(nn.Module):
         for channel in block_cfg:
             stride = 2 if prev_channel != channel and prev_channel != 3 else 1
             if args.model == 'resnet_50' or args.model == 'resnet_101' or args.model == 'resnet_152':
-                networks.append(BottleNeckBlock(prev_channel, channel // bottleneck_ratio, channel, 3, padding=1, stride=stride))
+                networks.append(BottleNeckBlock(prev_channel, channel // bottleneck_ratio, channel, 3, padding=1, stride=stride, norm=args.norm))
             else:
-                networks.append(ResidualBlock(prev_channel, channel, 3, padding=1, stride=stride))
+                networks.append(ResidualBlock(prev_channel, channel, 3, padding=1, stride=stride, norm=args.norm))
             prev_channel = channel
         return nn.Sequential(*networks)
     def forward(self, x, y):
@@ -450,12 +450,12 @@ class SBC_Permuted_MNIST(nn.Module):
         return F.softmax(self.out(z))
 
 def get_norm(norm):
-    if norm == 'batch_norm':
+    if norm == 'batchnorm':
         return nn.BatchNorm2d
-    elif norm == 'group_norm':
+    elif norm == 'continualnorm':
         return nn.GroupNorm
     else:
-        return Identity()
+        return Identity
 
 
 def get_model(model_name):

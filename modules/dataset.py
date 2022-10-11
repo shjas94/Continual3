@@ -8,7 +8,7 @@ import torch.utils.data as data
 from torch.utils.data import DataLoader
 import numpy as np
 from PIL import Image
-
+from utils.utils import val_formatter
 
 
 def _get_permuted_img(img, permutation):
@@ -19,6 +19,14 @@ def _get_permuted_img(img, permutation):
     img = img.view(-1, c)
     img = img[permutation, :]
     return img.view(c, h, w)
+
+def get_coreset_augmentation():
+    return transforms.Compose([
+        transforms.RandomVerticalFlip(),
+        transforms.RandomHorizontalFlip(),
+        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2),
+        transforms.GaussianBlur(kernel_size=3)
+    ])
 
 def get_transforms(args):
     if args.dataset == 'splitted_mnist':
@@ -198,6 +206,8 @@ def get_dataset(args,
                                    train=False)
     
     elif dataset == 'tiny_imagenet':
+        if os.path.exists(os.path.join(args.data_root, 'tiny-imagenet-200', 'val', 'images')):
+            val_formatter()
         train_dataset = ImageFolder(root=os.path.join(root, 'tiny-imagenet-200', 'train'), 
                                     transform=transform,
                                     target_transform=None)

@@ -7,7 +7,7 @@ import wandb
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
 from modules.models import get_model
-from modules.dataset import prepare_data, Coreset_Dataset
+from modules.dataset import prepare_data, get_coreset_augmentation, Coreset_Dataset
 from modules.loss import get_criterion
 from modules.coreset import Coreset_Manager
 from utils.utils import seed_everything, get_optimizer, calculate_answer, get_target
@@ -289,7 +289,7 @@ def main(args):
                                   acc_matrix=acc_matrix,
                                   memory_over_tasks_dataset=memory_over_tasks_dataset)
         if args.use_memory:
-            coreset_manager = Coreset_Manager(model, args, memory_in_epoch, args.num_classes//args.num_tasks, memory_over_tasks_dataset, device)
+            coreset_manager = Coreset_Manager(model, args, memory_in_epoch, args.num_classes//args.num_tasks, memory_over_tasks_dataset, device, get_coreset_augmentation())
             memory_over_tasks_dataset = coreset_manager.get_memory()
             wasserstein_dist_df = coreset_manager.get_wasserstein_dist_df()
             energy_dist_df = coreset_manager.get_energy_dist_df()
@@ -344,6 +344,7 @@ if __name__ == "__main__":
     parser.add_argument('--cuda', default=True, action='store_true')
     parser.add_argument('--num_workers', type=int, default=3)
     parser.add_argument('--model', type=str, default='resnet_34', choices=('beginning', 'middle', 'end', 'ebm_mnist', 'end_oxford', 'resnet_18', 'resnet_34', 'resnet_50', 'resnet_101', 'resnet_152'))
+    parser.add_argument('--norm', type=str, default='none', choices=('batchnorm', 'continualnorm', 'none'))
     parser.add_argument('--optimizer', type=str, default='adam', choices=('adam', 'adamw', 'sgd'))
     parser.add_argument('--lr', type=float, default=1e-04)
     parser.add_argument('--criterion', type=str, default='nll_energy', choices=('nll_energy', 'contrastive_divergence'))

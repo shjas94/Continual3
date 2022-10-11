@@ -10,7 +10,7 @@ from scipy.stats import wasserstein_distance, energy_distance
 from modules.dataset import Coreset_Dataset
 
 class Coreset_Manager(object):
-    def __init__(self, model, args, memory, num_classes_per_tasks, memory_over_tasks_dataset, device):
+    def __init__(self, model, args, memory, num_classes_per_tasks, memory_over_tasks_dataset, device, augmentation=None):
         self.x, self.y, self.energy = memory
         self.num_classes_per_tasks = num_classes_per_tasks
         self.cl_list = sorted(list(set(list(self.y.numpy()))))
@@ -18,7 +18,7 @@ class Coreset_Manager(object):
         self.classes = self._get_class_name(args)
         self.wasserstein_dist_df = pd.DataFrame(index=self.available_memory_options, columns=self.classes)
         self.energy_dist_df = pd.DataFrame(index=self.available_memory_options, columns=self.classes)
-        self.memory_energy, self.coresets = self._generate_and_evaluate_coreset(args, model, device, memory_over_tasks_dataset)
+        self.memory_energy, self.coresets = self._generate_and_evaluate_coreset(args, model, device, memory_over_tasks_dataset, augmentation)
         
         
         
@@ -34,13 +34,13 @@ class Coreset_Manager(object):
         return [list(cifar_label_map.keys())[list(cifar_label_map.values()).index(l)]\
                 for l in cifar_labels]
             
-    def _generate_and_evaluate_coreset(self, args, model, device, memory_over_tasks_dataset):
+    def _generate_and_evaluate_coreset(self, args, model, device, memory_over_tasks_dataset, augmentation=None):
         for cur_class, cl in tqdm(enumerate(self.cl_list[-self.num_classes_per_tasks:]), desc="Getting Coreset"):
             index = (self.y == torch.tensor(cl)).nonzero(as_tuple=True)
             cur_x = self.x[index]
             cur_y = self.y[index]
             cur_energy = self.energy[index]
-            # memory_energy = torch.empty(0) # 이걸 왜 여기서 선언하지?
+            # memory_energy = torch.empty(0) # ???
             memory_energy = torch.empty(0)
 
             if args.memory_option == "random_sample":
@@ -75,17 +75,17 @@ class Coreset_Manager(object):
             self.energy_dist_df[self.classes[cur_class]][args.memory_option] = self._calulate_energy_distance(cur_energy, memory_energy)
         return memory_energy, memory_over_tasks_dataset
     
-    def _random_sample(self, args, cur_x, cur_y, cur_energy, memory_energy, memory_over_tasks_dataset):
+    def _random_sample(self, args, cur_x, cur_y, cur_energy, memory_energy, memory_over_tasks_dataset, augmentation=None):
         idx = torch.randperm(len(cur_x))[:args.memory_size]
         memory_x = cur_x[idx]
         memory_y = cur_y[idx]
         mem_energy = cur_energy[idx]
         memory_energy = torch.cat((memory_energy, mem_energy.detach().cpu().view(-1)))
-        memory_dataset = Coreset_Dataset(memory_x, memory_y)
+        memory_dataset = Coreset_Dataset(memory_x, memory_y, transform=augmentation)
         memory_over_tasks_dataset = ConcatDataset([memory_over_tasks_dataset, memory_dataset])
         return memory_energy, memory_over_tasks_dataset
     
-    def _energy_based(self, args, cur_x, cur_y, cur_energy, memory_energy, memory_over_tasks_dataset, energy_mode=True):
+    def _energy_based(self, args, cur_x, cur_y, cur_energy, memory_energy, memory_over_tasks_dataset, energy_mode=True, augmentation=None):
         '''
         energy_mode = True if you select coreset by high_energy
         else False
@@ -93,7 +93,7 @@ class Coreset_Manager(object):
         idx = torch.topk(cur_energy, args.memory_size, dim=0, largest=energy_mode)[1]
         memory_x = cur_x[idx].view((-1, args.num_channels, args.img_size, args.img_size))
         memory_y = cur_y[idx]
-        memory_dataset = Coreset_Dataset(memory_x, memory_y)
+        memory_dataset = Coreset_Dataset(memory_x, memory_y, transform=augmentation)
         mem_energy = cur_energy[idx]
         memory_energy = torch.cat((memory_energy, mem_energy.detach().cpu().view(-1)))
         memory_over_tasks_dataset = ConcatDataset([memory_over_tasks_dataset, memory_dataset])
@@ -112,7 +112,7 @@ class Coreset_Manager(object):
             score_tensor = torch.cat((score_tensor, sum.detach().cpu().view(-1)))
         return score_tensor
     
-    def _score_based(self, args, model, device, cur_x, cur_y, cur_energy, memory_energy, memory_over_tasks_dataset, score_mode=True):
+    def _score_based(self, args, model, device, cur_x, cur_y, cur_energy, memory_energy, memory_over_tasks_dataset, score_mode=True, augmentation=None):
         '''
         score_mode = True if you select coreset by max_score
         else False
@@ -123,21 +123,21 @@ class Coreset_Manager(object):
         memory_y = cur_y[idx]
         mem_energy = cur_energy[idx]
         memory_energy = torch.cat((memory_energy, mem_energy.detach().cpu().view(-1)))
-        memory_dataset = Coreset_Dataset(memory_x, memory_y)
+        memory_dataset = Coreset_Dataset(memory_x, memory_y, transform=augmentation)
         memory_over_tasks_dataset = ConcatDataset([memory_over_tasks_dataset, memory_dataset])
         return memory_energy, memory_over_tasks_dataset
     
-    def _confused_pred(self, args, cur_x, cur_y, cur_energy, memory_energy, memory_over_tasks_dataset):
+    def _confused_pred(self, args, cur_x, cur_y, cur_energy, memory_energy, memory_over_tasks_dataset, augmentation=None):
         idx = torch.topk(cur_energy, args.memory_size, dim=0, largest=True)[1]
         memory_x = cur_x[idx].view(args.img_size)
         memory_y = cur_y[idx]
         mem_energy = cur_energy[idx]
         memory_energy = torch.cat((memory_energy, mem_energy.detach().cpu().view(-1)))
-        memory_dataset = Coreset_Dataset(memory_x, memory_y)
+        memory_dataset = Coreset_Dataset(memory_x, memory_y, transform=augmentation)
         memory_over_tasks_dataset = ConcatDataset([memory_over_tasks_dataset, memory_dataset])
         return memory_energy, memory_over_tasks_dataset
     
-    def _bin_based(self, args, cur_x, cur_y, cur_energy, memory_energy, memory_over_tasks_dataset):
+    def _bin_based(self, args, cur_x, cur_y, cur_energy, memory_energy, memory_over_tasks_dataset, augmentation=None):
         flatten_energy = cur_energy.view(-1)
         _, bin_idx = torch.sort(flatten_energy)
         bins = torch.linspace(0, len(bin_idx), args.memory_size).long()
@@ -146,7 +146,7 @@ class Coreset_Manager(object):
         memory_y = cur_y[bin_idx][bins]
         mem_energy = cur_energy[bin_idx][bins]
         memory_energy = torch.cat((memory_energy, mem_energy.detach().cpu().view(-1)))
-        memory_dataset = Coreset_Dataset(memory_x, memory_y)
+        memory_dataset = Coreset_Dataset(memory_x, memory_y, transform=augmentation)
         memory_over_tasks_dataset = ConcatDataset([memory_over_tasks_dataset, memory_dataset])
         return memory_energy, memory_over_tasks_dataset
     
