@@ -12,28 +12,31 @@ def val_formatter(root='data', data_dir='tiny-imagenet-200'):
     target_folder = os.path.join(root, data_dir, 'val')
     # os.mkdir(test_folder)
     val_dict = {}
-    with open('./tiny-imagenet-200/val/val_annotations.txt', 'r') as f:
+    # './tiny-imagenet-200/val/val_annotations.txt'
+    with open(os.path.join(target_folder, 'val_annotations.txt'), 'r') as f:
         for line in f.readlines():
             split_line = line.split('\t')
             val_dict[split_line[0]] = split_line[1]
-            
-    paths = glob.glob('./tiny-imagenet-200/val/images/*')
+    # './tiny-imagenet-200/val/images/*'        
+    paths = glob.glob(os.path.join(target_folder, 'images', '*'))
     for path in paths:
         file = path.split('/')[-1]
         folder = val_dict[file]
-        if not os.path.exists(target_folder + str(folder)):
-            os.mkdir(target_folder + str(folder))
-            os.mkdir(target_folder + str(folder) + '/images')
+        if not os.path.exists(os.path.join(target_folder, str(folder))):
+            os.mkdir(os.path.join(target_folder, str(folder)))
+            os.mkdir(os.path.join(target_folder, str(folder) , 'images'))
             
             
     for path in paths:
         file = path.split('/')[-1]
         folder = val_dict[file]
-        if len(glob.glob(target_folder + str(folder) + '/images/*')) < 25:
-            dest = target_folder + str(folder) + '/images/' + str(file)
+        # target_folder + str(folder) + '/images/*'
+        # target_folder + str(folder) + '/images/' + str(file)
+        if len(glob.glob(os.path.join(target_folder, str(folder), 'images', '*'))) < 25:
+            dest = os.path.join(target_folder, str(folder), 'images')
         move(path, dest)
         
-    rmdir('./tiny-imagenet-200/val/images')
+    rmdir(os.path.join(target_folder, 'images'))
 
 def seed_everything(seed):
     os.environ["PYTHONHASHSEED"] = str(seed)
