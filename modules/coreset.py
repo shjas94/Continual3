@@ -27,11 +27,13 @@ class Coreset_Manager(object):
         with open(os.path.join('utils','labels.yml')) as outfile:
             label_map = yaml.safe_load(outfile)
         if args.dataset == 'cifar10':
-            cifar_label_map = label_map['CIFAR10_LABELS']
+            data_label_map = label_map['CIFAR10_LABELS']
+        elif args.dataset == 'tiny_imagenet':
+            data_label_map = label_map['TINYIMAGENET_LABELS']
         else:
-            raise NotImplemented('Only Available for Cifar10..... others will be implemented soon.....')
+            raise NotImplementedError('Only Available for Cifar10..... others will be implemented soon.....')
         cifar_labels = [i for i in range(args.num_classes)]
-        return [list(cifar_label_map.keys())[list(cifar_label_map.values()).index(l)]\
+        return [list(data_label_map.keys())[list(data_label_map.values()).index(l)]\
                 for l in cifar_labels]
             
     def _generate_and_evaluate_coreset(self, args, model, device, memory_over_tasks_dataset, augmentation=None):

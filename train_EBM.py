@@ -7,7 +7,7 @@ import wandb
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
 from modules.models import get_model
-from modules.dataset import prepare_data, get_coreset_augmentation, Coreset_Dataset
+from modules.dataset import prepare_data, get_augmentation, Coreset_Dataset
 from modules.loss import get_criterion
 from modules.coreset import Coreset_Manager
 from utils.utils import seed_everything, get_optimizer, calculate_answer, get_target
@@ -82,7 +82,7 @@ def train_one_epoch(args,
     
     for sample in pbar:
         optimizer.zero_grad()
-        if args.dataset == "splitted_mnist" or args.dataset == "cifar10" or args.dataset == "cifar100":
+        if args.dataset == "splitted_mnist" or args.dataset == "cifar10" or args.dataset == "cifar100" or args.dataset == "tiny_imagenet":
             x, y = sample[0].to(device), sample[1].to(device)
         elif args.dataset == "oxford_pet":
             _, x, y = sample[0], sample[1].to(device), sample[2].to(device)
@@ -131,6 +131,7 @@ def train_one_epoch(args,
             else:
                 memory_energy = torch.cat((memory_energy, model(x, y)[0].detach().cpu()))
         loss.backward()
+        torch.nn.utils.clip_grad_norm(model.parameters(), 1.)
         optimizer.step()
         
         #### Calculate Accs, Losses ####
@@ -189,7 +190,7 @@ def test_by_task(args,
     pred_energies, pred_indices= torch.empty(0), torch.empty(0)
     ids = []
     for i, sample in enumerate(pbar):
-        if args.dataset == "splitted_mnist" or args.dataset == "cifar10" or args.dataset == "cifar100":
+        if args.dataset == "splitted_mnist" or args.dataset == "cifar10" or args.dataset == "cifar100" or args.dataset == "tiny_imagenet":
             x, y = sample[0].to(device), sample[1].to(device)
             
         elif args.dataset == "oxford_pet":
@@ -289,7 +290,7 @@ def main(args):
                                   acc_matrix=acc_matrix,
                                   memory_over_tasks_dataset=memory_over_tasks_dataset)
         if args.use_memory:
-            coreset_manager = Coreset_Manager(model, args, memory_in_epoch, args.num_classes//args.num_tasks, memory_over_tasks_dataset, device, get_coreset_augmentation())
+            coreset_manager = Coreset_Manager(model, args, memory_in_epoch, args.num_classes//args.num_tasks, memory_over_tasks_dataset, device, get_augmentation())
             memory_over_tasks_dataset = coreset_manager.get_memory()
             wasserstein_dist_df = coreset_manager.get_wasserstein_dist_df()
             energy_dist_df = coreset_manager.get_energy_dist_df()
@@ -343,24 +344,25 @@ if __name__ == "__main__":
     parser.add_argument('--test_batch_size', type=int, default=64)
     parser.add_argument('--cuda', default=True, action='store_true')
     parser.add_argument('--num_workers', type=int, default=3)
-    parser.add_argument('--model', type=str, default='resnet_34', choices=('beginning', 'middle', 'end', 'ebm_mnist', 'end_oxford', 'resnet_18', 'resnet_34', 'resnet_50', 'resnet_101', 'resnet_152'))
+    parser.add_argument('--model', type=str, default='resnet_18', choices=('beginning', 'middle', 'end', 'ebm_mnist', 'end_oxford', \
+        'resnet_18', 'resnet_34', 'resnet_50', 'resnet_101', 'resnet_152'))
     parser.add_argument('--norm', type=str, default='none', choices=('batchnorm', 'continualnorm', 'none'))
     parser.add_argument('--optimizer', type=str, default='adam', choices=('adam', 'adamw', 'sgd'))
-    parser.add_argument('--lr', type=float, default=1e-04)
+    parser.add_argument('--lr', type=float, default=1e-06)
     parser.add_argument('--criterion', type=str, default='nll_energy', choices=('nll_energy', 'contrastive_divergence'))
-    parser.add_argument('--epoch', type=int, default=2)
+    parser.add_argument('--epoch', type=int, default=20)
     parser.add_argument('--use_memory', action='store_true', default=True, help='use memory buffer for CIL if True')
-    parser.add_argument('--memory_option', type=str, default='low_energy', choices=('random_sample', 'low_energy', \
+    parser.add_argument('--memory_option', type=str, default='bin_based', choices=('random_sample', 'low_energy', \
                                                                                        'high_energy', 'min_score', 'max_score',\
                                                                                        'confused_pred', 'representation', 'bin_based'))
     parser.add_argument('--img_size', type=int, default=32)
     parser.add_argument('--num_channels', type=int, default=3)
     parser.add_argument('--memory_size', type=int, default=20)
-    parser.add_argument('--save_confusion_fig', default=True, action='store_true')
-    parser.add_argument('--save_matrices', default=True, action='store_true')
-    parser.add_argument('--save_gt_fig', default=True, action='store_true')
-    parser.add_argument('--save_pred_tsne_fig', default=True, action='store_true')
-    parser.add_argument('--save_pred_tsne_with_gt_label_fig', default=True, action='store_true')
+    parser.add_argument('--save_confusion_fig', default=False, action='store_true')
+    parser.add_argument('--save_matrices', default=False, action='store_true')
+    parser.add_argument('--save_gt_fig', default=False, action='store_true')
+    parser.add_argument('--save_pred_tsne_fig', default=False, action='store_true')
+    parser.add_argument('--save_pred_tsne_with_gt_label_fig', default=False, action='store_true')
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--checkpoint_path', type=str, default='./checkpoint')
     parser.add_argument('--checkpoint', type=str, default='')

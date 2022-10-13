@@ -20,14 +20,23 @@ def _get_permuted_img(img, permutation):
     img = img[permutation, :]
     return img.view(c, h, w)
 
-def get_coreset_augmentation():
-    return transforms.Compose([
-        transforms.RandomVerticalFlip(),
-        transforms.RandomHorizontalFlip(),
-        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2),
-        transforms.GaussianBlur(kernel_size=3)
-    ])
-
+def get_augmentation(mode='coreset'):
+    if mode == 'coreset':
+        return transforms.Compose([
+            transforms.RandomVerticalFlip(),
+            transforms.RandomHorizontalFlip(),
+            transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2),
+            transforms.GaussianBlur(kernel_size=3)
+        ])
+    elif mode == 'tinyimagenet':
+        return transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+            transforms.RandomVerticalFlip(),
+            transforms.RandomHorizontalFlip(),
+            transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2),
+            transforms.GaussianBlur(kernel_size=3)
+        ])
 def get_transforms(args):
     if args.dataset == 'splitted_mnist':
         return transforms.Compose([
@@ -209,7 +218,7 @@ def get_dataset(args,
         if os.path.exists(os.path.join(args.data_root, 'tiny-imagenet-200', 'val', 'images')):
             val_formatter()
         train_dataset = ImageFolder(root=os.path.join(root, 'tiny-imagenet-200', 'train'), 
-                                    transform=transform,
+                                    transform=get_augmentation(mode='tinyimagenet'),
                                     target_transform=None)
         test_dataset  = ImageFolder(root=os.path.join(root, 'tiny-imagenet-200', 'val'),
                                     transform=transform,
