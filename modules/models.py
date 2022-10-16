@@ -1,13 +1,53 @@
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from collections import OrderedDict
+from torch.nn.modules.batchnorm import _BatchNorm
+
 
 class Identity(nn.Module):
     def __init__(self, *args, **kwargs):
         super().__init__()
     def forward(self, x):
         return x
+    
+class _CN(_BatchNorm):
+    #def __init__(self, num_features, eps=1e-5, momentum=0.1, affine=False):
+    def __init__(self, target, eps = 1e-5, momentum = 0.1, affine=True):
+        num_features = target.num_features
+        super(_CN, self).__init__(num_features, eps, momentum, affine=True)
+        self.running_mean = target.running_mean
+        self.running_var = target.running_var
+        
+        self.weight = target.weight
+        self.bias = target.bias
 
+        self.N = num_features
+        self.setG()
+        #self.avg = nn.AdaptiveAvgPool2d((1,1))
+
+    def setG(self):
+        pass
+    def _check_input_dim(self, input):
+        pass
+
+    def forward(self, input):
+        #self._check_input_dim(input)
+        out_gn = F.group_norm(input, self.G, None, None, self.eps)
+        out = F.batch_norm(out_gn, self.running_mean, self.running_var, self.weight, self.bias,
+                self.training, self.momentum, self.eps)
+        return out
+
+class CN(_CN):
+    def __init__(self, num_features, eps = 1e-5, momentum = 0.1, G=8, affine=True):
+        super(_CN, self).__init__(num_features, eps, momentum, affine=True)
+        self.G = G
+
+    def forward(self, input):
+        out_gn = F.group_norm(input, self.G, None, None, self.eps)
+        out = F.batch_norm(out_gn, self.running_mean, self.running_var, self.weight, self.bias,
+                self.training, self.momentum, self.eps)
+        return out
+    
 class ResidualBlock(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size, padding, stride=1, norm='none'):
         super(ResidualBlock, self).__init__()
@@ -56,8 +96,9 @@ class ResNet(nn.Module):
         self.embedding = nn.Embedding(self.num_classes, self.block_cfg[args.model][-1])
         self.fc = nn.Linear(self.block_cfg[args.model][-1], 1)
     def _get_network(self, args, block_cfg, bottleneck_ratio):
-        prev_channel = 3
+        prev_channel = 64
         networks = list()
+        networks.append(nn.Conv2d(3, 64, 3, 1, 1))
         for channel in block_cfg:
             stride = 2 if prev_channel != channel and prev_channel != 3 else 1
             if args.model == 'resnet_50' or args.model == 'resnet_101' or args.model == 'resnet_152':
@@ -72,6 +113,8 @@ class ResNet(nn.Module):
         z = self.avgpool(z)
         z = z.view(bs, -1)
         y_z = self.embedding(y)
+        # print(y.shape)
+        # print(z.shape, y_z.shape)
         z *= y_z
         rep = z
         return self.fc(z), rep
@@ -453,7 +496,7 @@ def get_norm(norm):
     if norm == 'batchnorm':
         return nn.BatchNorm2d
     elif norm == 'continualnorm':
-        return nn.GroupNorm
+        return CN
     else:
         return Identity
 
