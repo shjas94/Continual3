@@ -1,9 +1,13 @@
 import torch
 
-def _calculate_energy_partition(energy):
-    return torch.logsumexp(-1 * energy, dim=1, keepdim=True)
+def _calculate_energy_partition(energy, task_class_set=None, coreset_mode=False):
+    if not coreset_mode:
+        return torch.logsumexp(-1 * energy[:, list(task_class_set)[-2:]], dim=1, keepdim=True).clone()
+    else:
+        return torch.logsumexp(-1 * energy[:, list(task_class_set)[:-2]], dim=1, keepdim=True).clone()
 
 def _calculate_energy_positive(energy, y_ans_idx):
+
     return energy.gather(dim=1, index=y_ans_idx)
 
 def _calculate_energy_negative(energy, y_ans_idx, device):
@@ -20,9 +24,9 @@ def _calculate_energy_negative(energy, y_ans_idx, device):
     return energy.gather(dim=1, index=y_neg_idx.to(device))
             
     
-def energy_nll_loss(energy, y_ans_idx):
+def energy_nll_loss(energy, y_ans_idx, task_class_set=None, coreset_mode=False):
     energy_pos = _calculate_energy_positive(energy, y_ans_idx)
-    energy_partition = _calculate_energy_partition(energy)
+    energy_partition = _calculate_energy_partition(energy, task_class_set, coreset_mode)
     return (energy_pos + energy_partition).mean()
 
 def contrastive_divergence(energy, y_ans_idx, device):

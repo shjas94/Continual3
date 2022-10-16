@@ -1,11 +1,12 @@
 import argparse
+from distutils import core
 import os
 import torch
 import numpy as np
 from tqdm import tqdm
 import wandb
 import torchvision.transforms as transforms
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, RandomSampler
 from modules.models import get_model
 from modules.dataset import prepare_data, get_augmentation, Coreset_Dataset
 from modules.loss import get_criterion
@@ -21,13 +22,13 @@ def trainer(args,
             test_loaders,
             task_class_set, 
             total_class_set,
+            coreset_class_set,
             model, 
             optimizer,
             criterion, 
             task_num,
             acc_matrix=None,
             memory_over_tasks_dataset=None):
-
     model.train()
     for p in model.parameters():
         p.require_grad = True
@@ -38,16 +39,17 @@ def trainer(args,
         task_class_set = [temp_task_class_set]
     for e in range(args.epoch):
         total_class_set, train_accs, _, memory_in_epoch = train_one_epoch(args=args,
-                                                         epoch=e,
-                                                         device=device,
-                                                         model=model,
-                                                         loader=train_loader,
-                                                         optimizer=optimizer,
-                                                         criterion=criterion,
-                                                         task_class_set =task_class_set[-1], 
-                                                         total_class_set=total_class_set,
-                                                         task_num=task_num,
-                                                         memory_over_tasks_dataset=memory_over_tasks_dataset)
+                                                                          epoch=e,
+                                                                          device=device,
+                                                                          model=model,
+                                                                          loader=train_loader,
+                                                                          optimizer=optimizer,
+                                                                          criterion=criterion,
+                                                                          task_class_set =task_class_set[-1], 
+                                                                          total_class_set=total_class_set,
+                                                                          coreset_class_set=coreset_class_set,
+                                                                          task_num=task_num,
+                                                                          memory_over_tasks_dataset=memory_over_tasks_dataset)
         task_infos = test_total(args=args,
                                 device=device,
                                 model=model, 
@@ -69,17 +71,24 @@ def train_one_epoch(args,
                     criterion, 
                     task_class_set, 
                     total_class_set,
+                    coreset_class_set,
                     task_num,
                     logger=None,
                     memory_over_tasks_dataset=None):
-    
+    # print(task_class_set)
     pbar = tqdm(loader, total=loader.__len__(), position=0, leave=True)
     train_loss_list = []
     train_answers, total_len = 0, 0
     model.num_class = len(task_class_set)+len(total_class_set)
-    
     memory_x, memory_y, memory_energy, memory_rep_in_epoch = torch.empty(0), torch.empty(0), torch.empty(0), torch.empty(0)
-    
+
+    if args.use_memory and len(memory_over_tasks_dataset) != 0:
+        memory_sampler = RandomSampler(data_source=memory_over_tasks_dataset, 
+                                       replacement=False)
+        memory_loader = DataLoader(dataset=memory_over_tasks_dataset,
+                                sampler=memory_sampler,
+                                batch_size=args.batch_size,
+                                drop_last=False)
     for sample in pbar:
         optimizer.zero_grad()
         if args.dataset == "splitted_mnist" or args.dataset == "cifar10" or args.dataset == "cifar100" or args.dataset == "tiny_imagenet":
@@ -93,33 +102,69 @@ def train_one_epoch(args,
             else:
                 y = sample[2]+(10*(task_num-1))
                 y = y.to(device)
-        
-        if args.use_memory and memory_over_tasks_dataset:
-            memory_loader = DataLoader(dataset=memory_over_tasks_dataset,
-                                       shuffle=True,
-                                       batch_size=args.batch_size)
-            mem_sample = next(iter(memory_loader))
-            mem_x = mem_sample[0].to(device)
-            mem_y = mem_sample[1].to(device)
-            x = torch.cat((x, mem_x), dim=0)
-            y = torch.cat((y, mem_y), dim=0)
-                
         joint_targets = get_target(task_class_set, y).to(device)
         y_ans_idx     = torch.tensor([list(task_class_set).index(ans) for ans in y]).long()
         y_ans_idx     = y_ans_idx.view(len(y), 1).to(device)        
         energy        = torch.empty(0).to(device)
         for cl in range(joint_targets.shape[1]):
             en, _  = model(x, joint_targets[:,cl])
-            energy = torch.cat((energy, en.reshape(-1,1)), dim = 1)
-            
+            energy = torch.cat((energy, en.reshape(-1,1)), dim=1)
+                    
         if args.criterion   == 'nll_energy':
-            loss = criterion(energy=energy, y_ans_idx=y_ans_idx)
+            if args.use_memory:
+                loss = criterion(energy=energy, 
+                                 task_class_set=task_class_set, 
+                                 y_ans_idx=y_ans_idx,
+                                 coreset_mode=False)
+            else:
+                loss = criterion(energy=energy, 
+                                 task_class_set=task_class_set,
+                                 y_ans_idx=y_ans_idx,
+                                 coreset_mode=False)
         elif args.criterion == 'contrastive_divergence':
             loss = criterion(energy=energy, y_ans_idx=y_ans_idx, device=device)
             
-            
-        if args.use_memory:
-            memory_x = torch.cat((memory_x, x.detach().cpu()))
+        if args.use_memory and len(memory_over_tasks_dataset) != 0:
+            mem_sample = next(iter(memory_loader))
+            mem_x = mem_sample[0].to(device)
+            mem_y = mem_sample[1].to(device)
+            mem_joint_targets = get_target(task_class_set, mem_y).to(device) # [{1,2}, {3, 4}....]
+            mem_y_ans_idx = torch.tensor([list(task_class_set)[:-1*args.num_classes//args.num_tasks].index(ans) for ans in mem_y]).long()
+            mem_y_ans_idx = mem_y_ans_idx.view(len(mem_y),1).to(device)
+            mem_energy = torch.empty(0).to(device)
+            for i, cl in enumerate(range(mem_joint_targets.shape[1])):
+                mem_en, _ = model(mem_x, mem_joint_targets[:,cl])
+                mem_energy = torch.cat((mem_energy, mem_en.reshape(-1, 1)), dim=1)
+            if args.criterion == 'nll_energy':
+                mem_loss = criterion(energy=mem_energy, 
+                                     y_ans_idx=mem_y_ans_idx, 
+                                     task_class_set=task_class_set, 
+                                     coreset_mode=True)
+            train_answers += calculate_answer(mem_energy, mem_y_ans_idx)
+            total_len     += mem_y.shape[0]        
+
+        if args.use_memory and task_num != 1:
+            loss += mem_loss
+        
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.)
+        optimizer.step()
+        #### Calculate Accs, Losses ####
+        train_answers += calculate_answer(energy, y_ans_idx)
+        total_len     += y.shape[0]
+        train_loss_list.append(loss.item())
+        ################################
+        desc = f"Train Epoch : {epoch+1}, Loss : {np.mean(train_loss_list):.3f}, Accuracy : {train_answers / total_len:.3f}"
+        pbar.set_description(desc)
+        
+        if args.use_memory and epoch+1 == args.epoch:
+            '''
+            memory loader와 current task loader를 섞을 경우
+            memory 안에서의 class imbalance problem 발생 가능성 있음
+            + 아래 코드대로 굴릴 경우에 똑같은 sample들이 중복으로 들어가 있을 가능성 있음
+            -> 수정함
+            '''
+            memory_x = torch.cat((memory_x, x.detach().cpu())) 
             memory_y = torch.cat((memory_y, y.detach().cpu()))
             if args.memory_option == 'confused_pred':
                 true_index = (y - min(y)).type(torch.LongTensor).view(-1, 1).detach().cpu()
@@ -130,19 +175,8 @@ def train_one_epoch(args,
                 memory_energy = torch.cat((memory_energy, true_energy-neg_energy))
             else:
                 memory_energy = torch.cat((memory_energy, model(x, y)[0].detach().cpu()))
-        loss.backward()
-        torch.nn.utils.clip_grad_norm(model.parameters(), 1.)
-        optimizer.step()
         
-        #### Calculate Accs, Losses ####
-        train_answers += calculate_answer(energy, y_ans_idx)
-        total_len     += y.shape[0]        
-        train_loss_list.append(loss.item())
-        ################################
         
-        desc = f"Train Epoch : {epoch+1}, Loss : {np.mean(train_loss_list):.3f}, Accuracy : {train_answers / total_len:.3f}"
-        pbar.set_description(desc)
-    
     memory_in_epoch = [memory_x.detach().cpu(), memory_y.detach().cpu(), memory_energy.detach().cpu()]
         
     total_class_set = total_class_set.union(task_class_set)
@@ -267,29 +301,32 @@ def main(args):
     total_class_set = set()
     
     memory_over_tasks_dataset = Coreset_Dataset(torch.empty(0), torch.empty(0))
-    
     if args.wandb:
             wandb.init(project='EBM-Continual',
-                       group=args.model,
+                       group=args.dataset,
                        name=args.run_name,
                        config=args)
             wandb.watch(model)
+    coreset_class_set = None
     for task_num in range(len(train_loaders)):
         train_loader = train_loaders[task_num]
         print(f"=================Start Training Task{task_num+1}=================")
         _, task_infos, total_class_set, model, memory_in_epoch = trainer(args=args,
-                                  device=device,
-                                  train_loader=train_loader, 
-                                  test_loaders=test_loaders[:task_num+1],
-                                  task_class_set=task_class_sets[:task_num+1], 
-                                  total_class_set=total_class_set, 
-                                  model=model, 
-                                  optimizer=optimizer,
-                                  criterion=criterion, 
-                                  task_num=task_num+1,
-                                  acc_matrix=acc_matrix,
-                                  memory_over_tasks_dataset=memory_over_tasks_dataset)
+                                                                         device=device,
+                                                                         train_loader=train_loader, 
+                                                                         test_loaders=test_loaders[:task_num+1],
+                                                                         task_class_set=task_class_sets[:task_num+1], 
+                                                                         total_class_set=total_class_set, 
+                                                                         coreset_class_set=coreset_class_set,
+                                                                         model=model, 
+                                                                         optimizer=optimizer,
+                                                                         criterion=criterion, 
+                                                                         task_num=task_num+1,
+                                                                         acc_matrix=acc_matrix,
+                                                                         memory_over_tasks_dataset=memory_over_tasks_dataset)
         if args.use_memory:
+            print("Starting memory generation")
+            coreset_class_set = total_class_set
             coreset_manager = Coreset_Manager(model, args, memory_in_epoch, args.num_classes//args.num_tasks, memory_over_tasks_dataset, device, get_augmentation())
             memory_over_tasks_dataset = coreset_manager.get_memory()
             wasserstein_dist_df = coreset_manager.get_wasserstein_dist_df()
@@ -346,7 +383,7 @@ if __name__ == "__main__":
     parser.add_argument('--num_workers', type=int, default=3)
     parser.add_argument('--model', type=str, default='resnet_18', choices=('beginning', 'middle', 'end', 'ebm_mnist', 'end_oxford', \
         'resnet_18', 'resnet_34', 'resnet_50', 'resnet_101', 'resnet_152'))
-    parser.add_argument('--norm', type=str, default='none', choices=('batchnorm', 'continualnorm', 'none'))
+    parser.add_argument('--norm', type=str, default='continualnorm', choices=('batchnorm', 'continualnorm', 'none'))
     parser.add_argument('--optimizer', type=str, default='adam', choices=('adam', 'adamw', 'sgd'))
     parser.add_argument('--lr', type=float, default=1e-06)
     parser.add_argument('--criterion', type=str, default='nll_energy', choices=('nll_energy', 'contrastive_divergence'))
@@ -366,7 +403,7 @@ if __name__ == "__main__":
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--checkpoint_path', type=str, default='./checkpoint')
     parser.add_argument('--checkpoint', type=str, default='')
-    parser.add_argument('--wandb', default=False, action='store_true')
+    parser.add_argument('--wandb', default=True, action='store_true')
     parser.add_argument('--run_name', type=str, default='')
     args = parser.parse_args()
     main(args)
