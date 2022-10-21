@@ -10,8 +10,8 @@ from torch.utils.data import DataLoader, RandomSampler
 from modules.models import get_model
 from modules.dataset import prepare_data, get_augmentation, Coreset_Dataset
 from modules.loss import get_criterion
-from modules.coreset import Coreset_Manager
-from utils.utils import seed_everything, get_optimizer, calculate_answer, get_target
+from modules.coreset import Offline_Coreset_Manager
+from utils.utils import seed_everything, get_optimizer, calculate_answer, get_target, get_ans_idx
 from utils.drawer import draw_confusion, draw_tsne_proj
 from utils.intermediate_infos import IntermediateInfos
 import matplotlib.colors as mcolors
@@ -22,13 +22,12 @@ def trainer(args,
             test_loaders,
             task_class_set, 
             total_class_set,
-            coreset_class_set,
             model, 
             optimizer,
             criterion, 
             task_num,
             acc_matrix=None,
-            memory_over_tasks_dataset=None):
+            coresets  =None):
     model.train()
     for p in model.parameters():
         p.require_grad = True
@@ -39,7 +38,7 @@ def trainer(args,
         task_class_set = [temp_task_class_set]
     for e in range(args.epoch):
         total_class_set, train_accs, _, memory_in_epoch = train_one_epoch(args=args,
-                                                                          epoch=e,
+                                                                          epoch=e+1,
                                                                           device=device,
                                                                           model=model,
                                                                           loader=train_loader,
@@ -47,16 +46,14 @@ def trainer(args,
                                                                           criterion=criterion,
                                                                           task_class_set =task_class_set[-1], 
                                                                           total_class_set=total_class_set,
-                                                                          coreset_class_set=coreset_class_set,
                                                                           task_num=task_num,
-                                                                          memory_over_tasks_dataset=memory_over_tasks_dataset)
+                                                                          coresets=coresets)
         task_infos = test_total(args=args,
                                 device=device,
                                 model=model, 
                                 loaders=test_loaders, 
                                 total_class_set=total_class_set,
                                 task_num=task_num,
-                                epoch=e,
                                 acc_matrix=acc_matrix)
         
   
@@ -71,21 +68,19 @@ def train_one_epoch(args,
                     criterion, 
                     task_class_set, 
                     total_class_set,
-                    coreset_class_set,
                     task_num,
                     logger=None,
-                    memory_over_tasks_dataset=None):
-    # print(task_class_set)
+                    coresets=None):
     pbar = tqdm(loader, total=loader.__len__(), position=0, leave=True)
     train_loss_list = []
     train_answers, total_len = 0, 0
     model.num_class = len(task_class_set)+len(total_class_set)
     memory_x, memory_y, memory_energy, memory_rep_in_epoch = torch.empty(0), torch.empty(0), torch.empty(0), torch.empty(0)
 
-    if args.use_memory and len(memory_over_tasks_dataset) != 0:
-        memory_sampler = RandomSampler(data_source=memory_over_tasks_dataset, 
+    if args.use_memory and task_num != 1:
+        memory_sampler = RandomSampler(data_source=coresets, 
                                        replacement=False)
-        memory_loader = DataLoader(dataset=memory_over_tasks_dataset,
+        memory_loader = DataLoader(dataset=coresets,
                                 sampler=memory_sampler,
                                 batch_size=args.batch_size,
                                 drop_last=False)
@@ -102,9 +97,10 @@ def train_one_epoch(args,
             else:
                 y = sample[2]+(10*(task_num-1))
                 y = y.to(device)
+    
+            
         joint_targets = get_target(task_class_set, y).to(device)
-        y_ans_idx     = torch.tensor([list(task_class_set).index(ans) for ans in y]).long()
-        y_ans_idx     = y_ans_idx.view(len(y), 1).to(device)        
+        y_ans_idx     = get_ans_idx(list(task_class_set), y).to(device)        
         energy        = torch.empty(0).to(device)
         for cl in range(joint_targets.shape[1]):
             en, _  = model(x, joint_targets[:,cl])
@@ -112,58 +108,52 @@ def train_one_epoch(args,
                     
         if args.criterion   == 'nll_energy':
             if args.use_memory:
-                loss = criterion(energy=energy, 
-                                 task_class_set=task_class_set, 
+                loss = criterion(energy=energy,
                                  y_ans_idx=y_ans_idx,
+                                 classes_per_task=args.num_classes//args.num_tasks,
+                                 task_class_set=task_class_set,
                                  coreset_mode=False)
             else:
                 loss = criterion(energy=energy, 
-                                 task_class_set=task_class_set,
-                                 y_ans_idx=y_ans_idx,
-                                 coreset_mode=False)
+                                 y_ans_idx=y_ans_idx)          
         elif args.criterion == 'contrastive_divergence':
-            loss = criterion(energy=energy, y_ans_idx=y_ans_idx, device=device)
+            loss = criterion(energy=energy, 
+                             y_ans_idx=y_ans_idx, 
+                             device=device)
+        train_answers += calculate_answer(energy, y_ans_idx)
+        total_len     += y.shape[0]
             
-        if args.use_memory and len(memory_over_tasks_dataset) != 0:
+        if args.use_memory and len(coresets) != 0:
             mem_sample = next(iter(memory_loader))
             mem_x = mem_sample[0].to(device)
             mem_y = mem_sample[1].to(device)
             mem_joint_targets = get_target(task_class_set, mem_y).to(device) # [{1,2}, {3, 4}....]
-            mem_y_ans_idx = torch.tensor([list(task_class_set)[:-1*args.num_classes//args.num_tasks].index(ans) for ans in mem_y]).long()
-            mem_y_ans_idx = mem_y_ans_idx.view(len(mem_y),1).to(device)
+            mem_y_ans_idx     = get_ans_idx(list(task_class_set)[:-1*args.num_classes//args.num_tasks], mem_y).to(device)
             mem_energy = torch.empty(0).to(device)
-            for i, cl in enumerate(range(mem_joint_targets.shape[1])):
+            for cl in range(mem_joint_targets.shape[1]):
                 mem_en, _ = model(mem_x, mem_joint_targets[:,cl])
                 mem_energy = torch.cat((mem_energy, mem_en.reshape(-1, 1)), dim=1)
-            if args.criterion == 'nll_energy':
-                mem_loss = criterion(energy=mem_energy, 
-                                     y_ans_idx=mem_y_ans_idx, 
-                                     task_class_set=task_class_set, 
-                                     coreset_mode=True)
+                
+            mem_loss = criterion(energy=mem_energy, 
+                                 y_ans_idx=mem_y_ans_idx,
+                                 task_class_set=task_class_set,
+                                 classes_per_task=args.num_classes // args.num_tasks, 
+                                 coreset_mode=True)
+            loss          += mem_loss
             train_answers += calculate_answer(mem_energy, mem_y_ans_idx)
-            total_len     += mem_y.shape[0]        
-
-        if args.use_memory and task_num != 1:
-            loss += mem_loss
+            total_len     += mem_y.shape[0]            
         
+        
+        #### Calculate Losses ####
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.)
         optimizer.step()
-        #### Calculate Accs, Losses ####
-        train_answers += calculate_answer(energy, y_ans_idx)
-        total_len     += y.shape[0]
         train_loss_list.append(loss.item())
         ################################
-        desc = f"Train Epoch : {epoch+1}, Loss : {np.mean(train_loss_list):.3f}, Accuracy : {train_answers / total_len:.3f}"
+        desc = f"Train Epoch : {epoch}, Loss : {np.mean(train_loss_list):.3f}, Accuracy : {train_answers / total_len:.3f}"
         pbar.set_description(desc)
         
-        if args.use_memory and epoch+1 == args.epoch:
-            '''
-            memory loader와 current task loader를 섞을 경우
-            memory 안에서의 class imbalance problem 발생 가능성 있음
-            + 아래 코드대로 굴릴 경우에 똑같은 sample들이 중복으로 들어가 있을 가능성 있음
-            -> 수정함
-            '''
+        if args.use_memory and epoch == args.epoch and args.learning_mode == 'offline':
             memory_x = torch.cat((memory_x, x.detach().cpu())) 
             memory_y = torch.cat((memory_y, y.detach().cpu()))
             if args.memory_option == 'confused_pred':
@@ -175,9 +165,12 @@ def train_one_epoch(args,
                 memory_energy = torch.cat((memory_energy, true_energy-neg_energy))
             else:
                 memory_energy = torch.cat((memory_energy, model(x, y)[0].detach().cpu()))
+            memory_in_epoch = [memory_x.detach().cpu(), memory_y.detach().cpu(), memory_energy.detach().cpu()] 
+               
+        elif args.use_memory and args.learning_mode == 'online':
+            pass
         
-        
-    memory_in_epoch = [memory_x.detach().cpu(), memory_y.detach().cpu(), memory_energy.detach().cpu()]
+   
         
     total_class_set = total_class_set.union(task_class_set)
     return total_class_set, train_answers / total_len, train_loss_list, memory_in_epoch
@@ -189,19 +182,32 @@ def test_total(args,
                loaders, 
                total_class_set, 
                task_num,
-               epoch,
                acc_matrix):
     
     task_infos = IntermediateInfos()
     for i,loader in enumerate(loaders):
-        task_acc, pred_classes, ys, reps, pred_reps, lowest_img_infos = \
+        task_acc, pred_classes, ys, reps, pred_reps, lowest_img_infos, answer_energy, confused_energy, confused_class = \
             test_by_task(args, device, model, loader, total_class_set, i)
         task_infos.add_infos(task_acc, 'task_acc')
         task_infos.add_infos(pred_classes, 'pred_classes')
         task_infos.add_infos(ys, 'ys')
         task_infos.add_infos(reps, 'reps')
         task_infos.add_infos(pred_reps, 'pred_reps')
-        task_infos.add_infos(lowest_img_infos, 'lowest_img_infos') 
+        task_infos.add_infos(lowest_img_infos, 'lowest_img_infos')
+        if not os.path.exists(os.path.join('asset')):
+            os.mkdir(os.path.join('asset'))
+        if not os.path.exists(os.path.join('asset', 'answer_energy')):
+            os.mkdir(os.path.join('asset', 'answer_energy'))
+        if not os.path.exists(os.path.join('asset', 'confused_energy')):
+            os.mkdir(os.path.join('asset', 'confused_energy'))    
+        if not os.path.exists(os.path.join('asset', 'ys')):
+            os.mkdir(os.path.join('asset', 'ys'))
+        if not os.path.exists(os.path.join('asset', 'confused_class')):
+            os.mkdir(os.path.join('asset', 'confused_class'))
+        torch.save(answer_energy, os.path.join('asset', 'answer_energy', f"Task_{task_num}_{i+1}th_test_answer_energy.pt"))
+        torch.save(confused_energy, os.path.join('asset', 'confused_energy', f"Task_{task_num}_{i+1}th_test_confused_energy.pt"))
+        torch.save(ys, os.path.join('asset', 'ys', f"Task_{task_num}_{i+1}th_test_ys.pt"))
+        torch.save(confused_class, os.path.join('asset', 'confused_class', f"Task_{task_num}_{i+1}th_test_confused_class.pt")) 
     if args.wandb:
         if task_infos.__len__('task_acc') < args.num_tasks:
             for _ in range(args.num_tasks-task_infos.__len__('task_acc')):
@@ -222,6 +228,8 @@ def test_by_task(args,
     pred_classes, ys = None, None
     reps, pred_reps = torch.empty(0), torch.empty(0)
     pred_energies, pred_indices= torch.empty(0), torch.empty(0)
+    answer_energy, confused_energy = torch.empty(0), torch.empty(0)
+
     ids = []
     for i, sample in enumerate(pbar):
         if args.dataset == "splitted_mnist" or args.dataset == "cifar10" or args.dataset == "cifar100" or args.dataset == "tiny_imagenet":
@@ -248,6 +256,12 @@ def test_by_task(args,
         energy = energy.detach().cpu() 
         pred_energy, pred_index = torch.min(energy, dim=1) # lowest energy among classes, prediction
         pred_class = class_set[pred_index] 
+        
+        answer_energy = torch.cat((answer_energy, torch.gather(energy.clone(), 1, y.reshape(-1,1))), dim=0)
+        temp_energy = energy.clone()
+        temp_energy[:, y] = float('inf')
+        confused_pred, confused_class = torch.topk(temp_energy, 1, dim=1, largest=False)
+        confused_energy = torch.cat((confused_energy, confused_pred), dim=0)
         
         ###### get prediction & intermediate representation
         gt_rep = rep[y, np.arange(len(y)), :]
@@ -280,7 +294,8 @@ def test_by_task(args,
 
     lowest_img_infos = (pred_min_energies.numpy(), pred_min_classes.numpy(), pred_ids, y_min_classes.numpy(), ids)
     
-    return accumulated_acc, pred_classes, ys, reps.numpy(), pred_reps.numpy(), lowest_img_infos
+    return accumulated_acc, pred_classes, ys, reps.numpy(), pred_reps.numpy(), lowest_img_infos, answer_energy, confused_energy,\
+        confused_class
         
 
 def main(args):
@@ -296,18 +311,21 @@ def main(args):
     model.to(device)
     train_loaders, test_loaders, task_class_sets = prepare_data(args)
     acc_matrix = np.zeros((args.num_tasks, args.num_tasks))
-    optimizer = get_optimizer(args.optimizer, lr=args.lr, parameters=model.parameters())
-    criterion = get_criterion(args.criterion)
+    optimizer = get_optimizer(args.optimizer, lr=args.lr, parameters=model.parameters(), weight_decay=args.weight_decay)
+    criterion = get_criterion(args.criterion, args.use_memory)
     total_class_set = set()
-    
-    memory_over_tasks_dataset = Coreset_Dataset(torch.empty(0), torch.empty(0))
+    available_memory_options = ['bin_based', 'random_sample', 'low_energy', 'high_energy', 'min_score', 'max_score', 'confused_pred']
+    coreset_manager = Offline_Coreset_Manager(args=args,
+                                              num_classes_per_tasks=args.num_classes // args.num_tasks,
+                                              num_memory_per_class =args.memory_size // args.num_classes,
+                                              available_memory_options=available_memory_options)
     if args.wandb:
             wandb.init(project='EBM-Continual',
                        group=args.dataset,
                        name=args.run_name,
                        config=args)
             wandb.watch(model)
-    coreset_class_set = None
+            
     for task_num in range(len(train_loaders)):
         train_loader = train_loaders[task_num]
         print(f"=================Start Training Task{task_num+1}=================")
@@ -317,18 +335,17 @@ def main(args):
                                                                          test_loaders=test_loaders[:task_num+1],
                                                                          task_class_set=task_class_sets[:task_num+1], 
                                                                          total_class_set=total_class_set, 
-                                                                         coreset_class_set=coreset_class_set,
                                                                          model=model, 
                                                                          optimizer=optimizer,
                                                                          criterion=criterion, 
                                                                          task_num=task_num+1,
                                                                          acc_matrix=acc_matrix,
-                                                                         memory_over_tasks_dataset=memory_over_tasks_dataset)
-        if args.use_memory:
+                                                                         coresets=coreset_manager.get_coreset())
+        if args.use_memory and args.learning_mode == 'offline':
             print("Starting memory generation")
-            coreset_class_set = total_class_set
-            coreset_manager = Coreset_Manager(model, args, memory_in_epoch, args.num_classes//args.num_tasks, memory_over_tasks_dataset, device, get_augmentation())
-            memory_over_tasks_dataset = coreset_manager.get_memory()
+            coreset_manager.add_coreset(model =model,
+                                        device=device,
+                                        memory=memory_in_epoch)
             wasserstein_dist_df = coreset_manager.get_wasserstein_dist_df()
             energy_dist_df = coreset_manager.get_energy_dist_df()
             
@@ -354,22 +371,26 @@ def main(args):
             total_y = np.concatenate(task_infos.get_infos('ys'), axis=0)
             draw_tsne_proj(args.fig_root, total_rep, total_y, args.num_classes // args.num_tasks, task_num+1, args.seed, \
                 task_infos.get_infos('lowest_img_infos'), dataset=args.dataset)
+            
         if args.save_pred_tsne_fig:
             total_pred_rep = np.concatenate(task_infos.get_infos('pred_reps'), axis=0)
             total_pred = np.concatenate(task_infos.get_infos('pred_classes'), axis=0)
             draw_tsne_proj(args.fig_root, total_pred_rep, total_pred, args.num_classes // args.num_tasks, task_num+1, args.seed, \
                 task_infos.get_infos('lowest_img_infos'), mcolors.CSS4_COLORS, 'pred', dataset=args.dataset)
+            
         if args.save_pred_tsne_with_gt_label_fig:
             total_pred_rep = np.concatenate(task_infos.get_infos('pred_reps'), axis=0)
             total_y = np.concatenate(task_infos.get_infos('ys'), axis=0)
             draw_tsne_proj(args.fig_root, total_pred_rep, total_y, args.num_classes // args.num_tasks, task_num+1, args.seed, \
                 task_infos.get_infos('lowest_img_infos'), mcolors.CSS4_COLORS, 'pred_with_gt_labels', dataset=args.dataset)
+            
         if args.wandb:
             task_acc = task_infos.get_infos('task_acc')
             for i in range(task_infos.__len__('task_acc')):
                 wandb.log({
                 f"Task {i+1} Test Accuracy" : task_acc[i]
                 })
+                
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--data_root', type=str, default='./data')
@@ -386,7 +407,9 @@ if __name__ == "__main__":
     parser.add_argument('--norm', type=str, default='continualnorm', choices=('batchnorm', 'continualnorm', 'none'))
     parser.add_argument('--optimizer', type=str, default='adam', choices=('adam', 'adamw', 'sgd'))
     parser.add_argument('--lr', type=float, default=1e-06)
+    parser.add_argument('--weight_decay', type=float, default=0.0)
     parser.add_argument('--criterion', type=str, default='nll_energy', choices=('nll_energy', 'contrastive_divergence'))
+    parser.add_argument('--learning_mode', type=str, default='offline', choices=('offline', 'online'))
     parser.add_argument('--epoch', type=int, default=20)
     parser.add_argument('--use_memory', action='store_true', default=True, help='use memory buffer for CIL if True')
     parser.add_argument('--memory_option', type=str, default='bin_based', choices=('random_sample', 'low_energy', \

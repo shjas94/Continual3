@@ -7,7 +7,6 @@ import numpy as np
 import random
 from torch.optim import Adam, AdamW, SGD
 
-
 def val_formatter(root='data', data_dir='tiny-imagenet-200'):
     target_folder = os.path.join(root, data_dir, 'val')
     # os.mkdir(test_folder)
@@ -32,8 +31,7 @@ def val_formatter(root='data', data_dir='tiny-imagenet-200'):
         folder = val_dict[file]
         # target_folder + str(folder) + '/images/*'
         # target_folder + str(folder) + '/images/' + str(file)
-        if len(glob.glob(os.path.join(target_folder, str(folder), 'images', '*'))) < 25:
-            dest = os.path.join(target_folder, str(folder), 'images')
+        dest = os.path.join(target_folder, str(folder), 'images')
         move(path, dest)
         
     rmdir(os.path.join(target_folder, 'images'))
@@ -48,13 +46,13 @@ def seed_everything(seed):
     np.random.seed(seed)
     random.seed(seed)
 
-def get_optimizer(optimizer, lr, parameters):
+def get_optimizer(optimizer, lr, parameters, weight_decay):
     if optimizer == 'adam':
-        return Adam(parameters, lr)
+        return Adam(parameters, lr, weight_decay=weight_decay)
     elif optimizer == 'adamw':
-        return AdamW(parameters, lr)
+        return AdamW(parameters, lr, weight_decay=weight_decay)
     elif optimizer == 'sgd':
-        return SGD(parameters, lr)
+        return SGD(parameters, lr, weight_decay=weight_decay)
     else:
         raise NotImplementedError
 
@@ -62,6 +60,10 @@ def get_target(task_class_set, y):
     task_class_set_tensor = torch.tensor(list(task_class_set))
     joint_targets = task_class_set_tensor.view(1, -1).expand(len(y), len(task_class_set_tensor))
     return joint_targets.long()
+
+def get_ans_idx(task_class_set, y):
+    ans_idx = torch.tensor([task_class_set.index(ans) for ans in y]).long()
+    return ans_idx.view(len(y), 1)
 
 def calculate_answer(energy, y_tem):
     _, pred = torch.min(energy, 1)
