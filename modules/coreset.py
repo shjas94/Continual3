@@ -66,8 +66,8 @@ class Offline_Coreset_Manager(object):
                 raise NotImplementedError("Not Implemented yet")
             else:
                 raise NotImplementedError("Not a valid option for coreset selection")
-            self.wasserstein_dist_df[self.classes[cur_class]][self.args.memory_option] = self._calculate_wasserstein_distance(cur_energy, self.memory_energy)
-            self.energy_dist_df[self.classes[cur_class]][self.args.memory_option] = self._calulate_energy_distance(cur_energy, self.memory_energy)
+            self.wasserstein_dist_df[self.classes[cur_class]][self.args.memory_option] = self._calculate_wasserstein_distance(cur_energy, self.memory_energy[cur_class])
+            self.energy_dist_df[self.classes[cur_class]][self.args.memory_option] = self._calulate_energy_distance(cur_energy, self.memory_energy[cur_class])
     
     def _get_class_name(self):
         with open(os.path.join('utils','labels.yml')) as outfile:
@@ -188,6 +188,7 @@ class Offline_Coreset_Manager(object):
 
     def __len__(self):
         return len(self.coreset)
+    
 @torch.no_grad()
 def accumulate_candidate(memory_option, model, energy, memory_x, memory_y, memory_energy, x, y):
         memory_x = torch.cat((memory_x, x.detach().cpu())) 
