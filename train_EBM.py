@@ -183,7 +183,7 @@ def train_one_epoch(args,
                     if not os.path.exists(os.path.join('asset', 'online_bin_energy')):
                         os.mkdir(os.path.join('asset', 'online_bin_energy'))        
                     if (it+1) % 100 == 0:
-                        torch.save(new_memory_energy, os.path.join('asset', 'online_bin_energy', f"Task_{task_num}_Iter_{it}_class_{cl}_memory_bin_energy.pt"))
+                        torch.save(new_memory_energy, os.path.join('asset', 'online_bin_energy', f"Task_{task_num}_Iter_{iter}_class_{cl}_memory_bin_energy.pt"))
     
     if args.learning_mode == 'online':
         memory_in_epoch = candidates
