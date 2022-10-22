@@ -84,12 +84,13 @@ def train_one_epoch(args,
     train_answers, total_len = 0, 0
     model.num_class = len(task_class_set)+len(total_class_set)
     memory_x, memory_y, memory_energy, memory_rep_in_epoch = torch.empty(0), torch.empty(0), torch.empty(0), torch.empty(0)
+    memory_in_epoch = None
     if args.use_memory and task_num != 1:
         memory_sampler = RandomSampler(data_source=coresets, 
                                        replacement=False)
         memory_loader = DataLoader(dataset=coresets,
                                 sampler=memory_sampler,
-                                batch_size=args.batch_size,
+                                batch_size=int(np.min([10*task_num, 64])),
                                 drop_last=False)
     for it, sample in enumerate(pbar):
         optimizer.zero_grad()
@@ -146,7 +147,7 @@ def train_one_epoch(args,
                                  task_class_set=task_class_set,
                                  classes_per_task=args.num_classes // args.num_tasks, 
                                  coreset_mode=True)
-            loss          += mem_loss
+            loss          += args.lam * mem_loss
             train_answers += calculate_answer(mem_energy, mem_y_ans_idx)
             total_len     += mem_y.shape[0]            
         
@@ -440,6 +441,7 @@ if __name__ == "__main__":
                                                                                        'high_energy', 'min_score', 'max_score',\
                                                                                        'confused_pred', 'representation', 'bin_based'))
     parser.add_argument('--img_size', type=int, default=32)
+    parser.add_argument('--lam', type=float, default=0.5, help='term for balancing current loss and memory loss')
     parser.add_argument('--num_channels', type=int, default=3)
     parser.add_argument('--memory_size', type=int, default=20)
     parser.add_argument('--save_confusion_fig', default=False, action='store_true')
