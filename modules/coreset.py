@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import wasserstein_distance, energy_distance
 from modules.dataset import Coreset_Dataset
-
+from utils.utils import get_target, get_ans_idx
 # main 함수에서 loader 별로 for문 돌기 전에 선언
 class Offline_Coreset_Manager(object):
     def __init__(self, args, num_classes_per_tasks, num_memory_per_class, available_memory_options):
@@ -190,7 +190,7 @@ class Offline_Coreset_Manager(object):
         return len(self.coreset)
     
 @torch.no_grad()
-def accumulate_candidate(memory_option, model, energy, memory_x, memory_y, memory_energy, x, y):
+def accumulate_candidate(memory_option, model, energy, memory_x, memory_y, memory_energy, joint_targets, y_ans_idx, x, y):
         memory_x = torch.cat((memory_x, x.detach().cpu())) 
         memory_y = torch.cat((memory_y, y.detach().cpu()))
         if memory_option == 'confused_pred':
@@ -201,15 +201,19 @@ def accumulate_candidate(memory_option, model, energy, memory_x, memory_y, memor
             neg_energy = torch.min(other_energy, dim=1, keepdim=True)[0]
             memory_energy = torch.cat((memory_energy, true_energy-neg_energy))
         else:
-            memory_energy = torch.cat((memory_energy, model(x, y)[0].detach().cpu())) # |bx1|    
+            energy = model(x, joint_targets)
+            true_energy = energy.gather(dim=1, index=y_ans_idx).detach().cpu()
+            memory_energy = torch.cat((memory_energy, true_energy)) # |bx1|    
         return [memory_x.detach().cpu(), memory_y.detach().cpu(), memory_energy.detach().cpu()]
 
 @torch.no_grad()
-def online_bin_based_sampling(model, memory_size, class_per_tasks, candidates, x, y, device):
+def online_bin_based_sampling(model, memory_size, class_per_tasks, candidates, task_class_set, x, y, device):
     x = torch.cat((candidates[0].long().to(device), x))
     y = torch.cat((candidates[1].long().to(device), y))
-    cur_energy = model(x, y)[0].detach().cpu()
-    
+    joint_targets = get_target(task_class_set, y).to(device).long()
+    y_ans_idx = get_ans_idx(task_class_set, y)
+    cur_energy = model(x, joint_targets).detach().cpu()
+    cur_energy = cur_energy.gather(dim=1, index=y_ans_idx)
     flatten_energy = cur_energy.view(-1) # |C_t|
     _, bin_idx = torch.sort(flatten_energy)
     bins = torch.linspace(0, len(bin_idx), memory_size).long()

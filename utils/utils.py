@@ -59,10 +59,10 @@ def get_optimizer(optimizer, lr, parameters, weight_decay):
 def get_target(task_class_set, y):
     task_class_set_tensor = torch.tensor(list(task_class_set))
     joint_targets = task_class_set_tensor.view(1, -1).expand(len(y), len(task_class_set_tensor))
-    return joint_targets.long()
+    return joint_targets
 
 def get_ans_idx(task_class_set, y):
-    ans_idx = torch.tensor([task_class_set.index(ans) for ans in y]).long()
+    ans_idx = torch.tensor([list(task_class_set).index(ans) for ans in y]).long()
     return ans_idx.view(len(y), 1)
 
 def calculate_answer(energy, y_tem):
