@@ -81,7 +81,6 @@ def train_one_epoch(args,
     pbar = tqdm(loader, total=loader.__len__(), position=0, leave=True)
     train_loss_list = []
     train_answers, total_len = 0, 0
-    model.num_class = len(task_class_set)+len(total_class_set)
     memory_x, memory_y, memory_energy, memory_rep_in_epoch = torch.empty(0), torch.empty(0), torch.empty(0), torch.empty(0)
     memory_in_epoch = None
     if args.use_memory and task_num != 1:
@@ -107,12 +106,7 @@ def train_one_epoch(args,
     
         
         joint_targets = get_target(task_class_set, y).to(device).long()
-        # print(task_class_set)
-        # task_class_set_tensor = torch.tensor(list(task_class_set))
-        # joint_targets = task_class_set_tensor.view(1, -1).expand(len(y), len(task_class_set_tensor)).to(device).long()
         y_ans_idx     = get_ans_idx(task_class_set, y).to(device)
-        # print('outside the model: ', joint_targets.shape)
-        # print(f"epoch: {epoch}, joint_targets : {joint_targets.shape}")
         energy = model(x, joint_targets)
         if args.criterion   == 'nll_energy':
             if args.use_memory:
@@ -259,12 +253,6 @@ def test_by_task(args,
             y = y.to(device)
         
         joint_targets = get_target(total_class_set, y).to(device)
-        # energy = torch.empty(0).to(device)
-        # rep = torch.empty(0)
-        # for cl in range(len(class_set)):
-        #     en, r = model(x, joint_targets[:,cl])
-        #     energy = torch.cat((energy, en.detach()), dim=-1) # |bxc|
-        #     rep = torch.cat((rep, torch.unsqueeze(r.detach().cpu(), 0)), dim=0) # |bx1024xc|
         energy = model(x, joint_targets)
         y = y.detach().cpu()
         energy = energy.detach().cpu() 
@@ -277,11 +265,6 @@ def test_by_task(args,
         confused_pred, confused_class = torch.topk(temp_energy, 1, dim=1, largest=False)
         confused_energy = torch.cat((confused_energy, confused_pred), dim=0)
         
-        ###### get prediction & intermediate representation
-        # gt_rep = rep[y, np.arange(len(y)), :]
-        # pred_rep = rep[pred_class,np.arange(len(pred_class)),:]
-        # reps = torch.cat((reps, gt_rep), dim=0)
-        # pred_reps = torch.cat((pred_reps, pred_rep))
         if i == 0:
             pred_energies = pred_energy
             pred_indices = pred_index.detach().cpu()
