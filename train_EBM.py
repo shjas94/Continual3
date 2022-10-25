@@ -87,9 +87,9 @@ def train_one_epoch(args,
         memory_sampler = RandomSampler(data_source=coresets, 
                                        replacement=False)
         memory_loader = DataLoader(dataset=coresets,
-                                sampler=memory_sampler,
-                                batch_size=32,
-                                drop_last=False)
+                                   sampler=memory_sampler,
+                                   batch_size=args.batch_size,
+                                   drop_last=False)
     for it, sample in enumerate(pbar):
         optimizer.zero_grad()
         if args.dataset == "splitted_mnist" or args.dataset == "cifar10" or args.dataset == "cifar100" or args.dataset == "tiny_imagenet":
@@ -103,44 +103,64 @@ def train_one_epoch(args,
             else:
                 y = sample[2]+(10*(task_num-1))
                 y = y.to(device)
-    
-        
+        cur_data_size = x.size(0)
         joint_targets = get_target(task_class_set, y).to(device).long()
         y_ans_idx     = get_ans_idx(task_class_set, y).to(device)
-        energy = model(x, joint_targets)
-        if args.criterion   == 'nll_energy':
-            if args.use_memory:
-                loss = criterion(energy=energy,
-                                 y_ans_idx=y_ans_idx,
-                                 classes_per_task=args.num_classes//args.num_tasks,
-                                 task_class_set=task_class_set,
-                                 coreset_mode=False)
-            else:
-                loss = criterion(energy=energy, 
-                                 y_ans_idx=y_ans_idx)          
-        elif args.criterion == 'contrastive_divergence':
-            loss = criterion(energy=energy, 
-                             y_ans_idx=y_ans_idx, 
-                             device=device)
-        train_answers += calculate_answer(energy, y_ans_idx)
-        total_len     += y.shape[0]
-            
-        if args.use_memory and len(coresets) != 0 and task_num != 1:
+        total_len += x.size(0)
+        if args.use_memory and task_num > 1:
             mem_sample = next(iter(memory_loader))
             mem_x = mem_sample[0].to(device)
             mem_y = mem_sample[1].to(device)
             mem_joint_targets = get_target(task_class_set, mem_y).to(device) 
             mem_y_ans_idx     = get_ans_idx(task_class_set, mem_y).to(device)
-            mem_energy = model(mem_x, mem_joint_targets)    
-            mem_loss = criterion(energy=mem_energy, 
-                                 y_ans_idx=mem_y_ans_idx,
+            x = torch.cat((x, mem_x), dim=0)
+            y = torch.cat((y, mem_y), dim=0)
+            joint_targets = torch.cat((joint_targets, mem_joint_targets), dim=0)
+            y_ans_idx = torch.cat((y_ans_idx, mem_y_ans_idx), dim=0)
+            total_len += mem_x.size(0)
+        energy = model(x, joint_targets)
+        if args.criterion == 'nll_energy':
+            if args.use_memory and task_num > 1:
+                cur_energies, mem_energies = energy[:cur_data_size, :], energy[cur_data_size:, :]
+                cur_loss = criterion(energy=cur_energies,
+                                     y_ans_idx=y_ans_idx[:cur_data_size, :],
+                                     class_per_task=args.num_classes//args.num_tasks,
+                                     task_class_set=task_class_set,
+                                     coreset_mode=False)
+                mem_loss = criterion(energy=mem_energies,
+                                     y_ans_idx=y_ans_idx[cur_data_size:, :],
+                                     class_per_task=args.num_classes//args.num_tasks,
+                                     task_class_set=task_class_set,
+                                     coreset_mode=True)
+                loss = cur_loss + mem_loss
+            else:
+                loss = criterion(energy=energy,
+                                 y_ans_idx=y_ans_idx,
+                                 class_per_task=args.num_classes//args.num_tasks,
                                  task_class_set=task_class_set,
-                                 classes_per_task=args.num_classes // args.num_tasks, 
-                                 coreset_mode=True)
-            loss          += args.lam * mem_loss
-            train_answers += calculate_answer(mem_energy, mem_y_ans_idx)
-            total_len     += mem_y.shape[0]            
-        
+                                 coreset_mode=False)
+        elif args.criterion == 'contrastive_divergence':
+            if args.use_memory and task_num > 1:
+                cur_energies, mem_energies = energy[:cur_data_size, :], energy[cur_data_size:, :]
+                cur_loss = criterion(energy=cur_energies,
+                                     y_ans_idx=y_ans_idx[:cur_data_size, :],
+                                     device=device,
+                                     class_per_task=args.num_classes//args.num_tasks,
+                                     coreset_mode=False)
+                mem_loss = criterion(energy=mem_energies,
+                                     y_ans_idx=y_ans_idx[cur_data_size:, :],
+                                     device=device,
+                                     class_per_task=args.num_classes//args.num_tasks,
+                                     coreset_mode=True)
+                loss = cur_loss + mem_loss
+            else:
+                loss = criterion(energy=energy,
+                                 y_ans_idx=y_ans_idx,
+                                 device=device,
+                                 class_per_task=args.num_classes//args.num_tasks,
+                                 coreset_mode=False)
+     
+        train_answers += calculate_answer(energy, y_ans_idx)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.)
         optimizer.step()
@@ -149,7 +169,16 @@ def train_one_epoch(args,
         pbar.set_description(desc)
 
         if args.use_memory and epoch == args.epoch and args.learning_mode == 'offline':
-            memory_in_epoch = accumulate_candidate(args.memory_option, model, energy, memory_x, memory_y, memory_energy, joint_targets, y_ans_idx, x, y)
+            memory_in_epoch = accumulate_candidate(memory_option=args.memory_option, 
+                                                   model=model, 
+                                                   energy=cur_energies,
+                                                   memory_x=memory_x, 
+                                                   memory_y=memory_y, 
+                                                   memory_energy=memory_energy, 
+                                                   joint_targets=joint_targets[:cur_data_size], 
+                                                   y_ans_idx=y_ans_idx[:cur_data_size], 
+                                                   x=x[:cur_data_size], 
+                                                   y=y[:cur_data_size])
         elif args.use_memory and args.learning_mode == 'online':
             for i in range(args.num_classes // args.num_tasks): # class per task만큼 순회
                 cl = torch.tensor(list(task_class_set)[-1*(args.num_classes // args.num_tasks):])[i] # i번째에 해당하는 class (i : task class set의 index, cl : index에 해당하는 class)
@@ -175,7 +204,7 @@ def train_one_epoch(args,
                     if not os.path.exists(os.path.join('asset', 'online_bin_energy')):
                         os.mkdir(os.path.join('asset', 'online_bin_energy'))        
                     if (it+1) % 100 == 0:
-                        torch.save(new_memory_energy, os.path.join('asset', 'online_bin_energy', f"Task_{task_num}_Iter_{iter}_class_{cl}_memory_bin_energy.pt"))
+                        torch.save(new_memory_energy, os.path.join('asset', 'online_bin_energy', f"Task_{task_num}_Iter_{it}_class_{cl}_memory_bin_energy.pt"))
     
     if args.learning_mode == 'online':
         memory_in_epoch = candidates

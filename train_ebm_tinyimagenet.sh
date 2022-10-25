@@ -1,3 +1,3 @@
-python train_EBM.py --dataset='tiny_imagenet' --batch_size=20 --test_batch_size=20 --norm='continualnorm' \
---img_size=64 --num_classes=200 --model='resnet_18' --num_tasks=100 --run_name='tiny_imagenet_after_loss_change_final_changed_energy_calc' --epoch=1 --lr=1e-3 --criterion='nll_energy' \
---learning_mode='online' --weight_decay=0.0 --memory_size=20 --memory_option='bin_based'
+python train_EBM.py --dataset='tiny_imagenet' --batch_size=32 --test_batch_size=32 --norm='continualnorm' \
+--img_size=64 --num_classes=200 --model='resnet_18' --num_tasks=100 --run_name='tiny_imagenet_after_loss_change_final_changed_energy_calc_lr_1e-04 lam 0.1 batch 32' --epoch=1 --lr=1e-4 --criterion='nll_energy' \
+--learning_mode='online' --weight_decay=0.0 --memory_size=20 --memory_option='bin_based' --lam=1.0
