@@ -6,17 +6,15 @@ import torch
 import numpy as np
 import random
 from torch.optim import Adam, AdamW, SGD
+from tqdm import tqdm
 
 def val_formatter(root='data', data_dir='tiny-imagenet-200'):
     target_folder = os.path.join(root, data_dir, 'val')
-    # os.mkdir(test_folder)
     val_dict = {}
-    # './tiny-imagenet-200/val/val_annotations.txt'
     with open(os.path.join(target_folder, 'val_annotations.txt'), 'r') as f:
         for line in f.readlines():
             split_line = line.split('\t')
             val_dict[split_line[0]] = split_line[1]
-    # './tiny-imagenet-200/val/images/*'        
     paths = glob.glob(os.path.join(target_folder, 'images', '*'))
     for path in paths:
         file = path.split('/')[-1]
@@ -24,13 +22,9 @@ def val_formatter(root='data', data_dir='tiny-imagenet-200'):
         if not os.path.exists(os.path.join(target_folder, str(folder))):
             os.mkdir(os.path.join(target_folder, str(folder)))
             os.mkdir(os.path.join(target_folder, str(folder) , 'images'))
-            
-            
     for path in paths:
         file = path.split('/')[-1]
         folder = val_dict[file]
-        # target_folder + str(folder) + '/images/*'
-        # target_folder + str(folder) + '/images/' + str(file)
         dest = os.path.join(target_folder, str(folder), 'images')
         move(path, dest)
         
@@ -74,6 +68,26 @@ def calculate_answer_sbc(probs, y):
     preds = np.argmax(probs, axis=-1)
     batch_answer = np.sum(1. * (y == preds))
     return batch_answer
-    
-    
 
+@torch.no_grad()
+def calculate_final_energy(model, device, loader, task_class_set):
+    task_energy = torch.empty(0)
+    answers = torch.empty(0)
+    cls_energies = []
+    pbar = tqdm(loader, total=loader.__len__(), position=0, leave=True)
+    for sample in pbar:
+        x, y = sample[0].to(device), sample[1].to(device)
+        joint_targets = get_target(task_class_set, y).to(device).long()
+        y_ans_idx     = get_ans_idx(task_class_set, y).to(device)
+        energy = model(x, joint_targets)
+        y_ans_idx = y_ans_idx.detach().cpu()
+        energy_cpu = energy.detach().cpu()
+        true_energy = torch.gather(energy_cpu, dim=1, index=y_ans_idx)
+        task_energy = torch.cat((task_energy, true_energy))
+        answers = torch.cat((answers, y_ans_idx))
+    
+    cur_task_class = torch.unique(answers, sorted=True)
+    for cls in cur_task_class:
+        idx = (y_ans_idx == cls).nonzero(as_tuple=True)[0]
+        cls_energies.append(task_energy[idx,:])
+    return cls_energies

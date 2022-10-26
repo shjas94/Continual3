@@ -10,7 +10,7 @@ from modules.models import get_model
 from modules.dataset import prepare_data, get_augmentation, Coreset_Dataset
 from modules.loss import get_criterion
 from modules.coreset import Offline_Coreset_Manager, accumulate_candidate, online_bin_based_sampling, add_online_coreset
-from utils.utils import seed_everything, get_optimizer, calculate_answer, get_target, get_ans_idx
+from utils.utils import seed_everything, get_optimizer, calculate_answer, get_target, get_ans_idx, calculate_final_energy
 from utils.drawer import draw_confusion, draw_tsne_proj
 from utils.intermediate_infos import IntermediateInfos
 import matplotlib.colors as mcolors
@@ -41,7 +41,7 @@ def trainer(args,
             temp_task_class_set = temp_task_class_set.union(task_class_set[i])
         task_class_set = [temp_task_class_set]
     for e in range(args.epoch):
-        total_class_set, train_accs, _, memory_in_epoch = train_one_epoch(args=args,
+        total_class_set, train_accs, _, memory_in_epoch, task_energy = train_one_epoch(args=args,
                                                                           epoch=e+1,
                                                                           device=device,
                                                                           model=model,
@@ -54,6 +54,8 @@ def trainer(args,
                                                                           coresets=coresets,
                                                                           candidates=candidates \
                                                                               if args.learning_mode == 'online' else None)
+        
+        
         task_infos = test_total(args=args,
                                 device=device,
                                 model=model, 
@@ -61,9 +63,12 @@ def trainer(args,
                                 total_class_set=total_class_set,
                                 task_num=task_num,
                                 acc_matrix=acc_matrix)
-        
+    final_energies = calculate_final_energy(model=model, 
+                                      device=device, 
+                                      loader=train_loader, 
+                                      task_class_set=task_class_set[-1])
   
-    return train_accs, task_infos, total_class_set, model, memory_in_epoch
+    return train_accs, task_infos, total_class_set, model, memory_in_epoch, task_energy, final_energies
         
 def train_one_epoch(args,
                     epoch,
@@ -80,9 +85,10 @@ def train_one_epoch(args,
                     candidates=None):
     pbar = tqdm(loader, total=loader.__len__(), position=0, leave=True)
     train_loss_list = []
-    train_answers, total_len = 0, 0
-    memory_x, memory_y, memory_energy, memory_rep_in_epoch = torch.empty(0), torch.empty(0), torch.empty(0), torch.empty(0)
+    train_answers, cur_answers, mem_answers, total_len, cur_len, mem_len = 0, 0, 0, 0, 0, 0
+    memory_x, memory_y, memory_energy, memory_rep_in_epoch, task_energy = torch.empty(0), torch.empty(0), torch.empty(0), torch.empty(0), torch.empty(0)
     memory_in_epoch = None
+    
     if args.use_memory and task_num != 1:
         memory_sampler = RandomSampler(data_source=coresets, 
                                        replacement=False)
@@ -124,19 +130,19 @@ def train_one_epoch(args,
                 cur_energies, mem_energies = energy[:cur_data_size, :], energy[cur_data_size:, :]
                 cur_loss = criterion(energy=cur_energies,
                                      y_ans_idx=y_ans_idx[:cur_data_size, :],
-                                     class_per_task=args.num_classes//args.num_tasks,
+                                     classes_per_task=args.num_classes//args.num_tasks,
                                      task_class_set=task_class_set,
                                      coreset_mode=False)
                 mem_loss = criterion(energy=mem_energies,
                                      y_ans_idx=y_ans_idx[cur_data_size:, :],
-                                     class_per_task=args.num_classes//args.num_tasks,
+                                     classes_per_task=args.num_classes//args.num_tasks,
                                      task_class_set=task_class_set,
                                      coreset_mode=True)
-                loss = cur_loss + mem_loss
+                loss = cur_loss + args.lam*mem_loss
             else:
                 loss = criterion(energy=energy,
                                  y_ans_idx=y_ans_idx,
-                                 class_per_task=args.num_classes//args.num_tasks,
+                                 classes_per_task=args.num_classes//args.num_tasks,
                                  task_class_set=task_class_set,
                                  coreset_mode=False)
         elif args.criterion == 'contrastive_divergence':
@@ -159,27 +165,28 @@ def train_one_epoch(args,
                                  device=device,
                                  class_per_task=args.num_classes//args.num_tasks,
                                  coreset_mode=False)
-     
+        cur_len += cur_data_size
+        mem_len += x.size(0) - cur_data_size
         train_answers += calculate_answer(energy, y_ans_idx)
+        if args.use_memory and task_num > 1:
+            cur_answers += calculate_answer(cur_energies, y_ans_idx[:cur_data_size])
+            mem_answers += calculate_answer(mem_energies, y_ans_idx[cur_data_size:])
+        
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.)
         optimizer.step()
         train_loss_list.append(loss.item())
-        desc = f"Train Epoch : {epoch}, Loss : {np.mean(train_loss_list):.3f}, Accuracy : {train_answers / total_len:.3f}"
+        if args.use_memory and task_num > 1:
+            desc = f"Train Epoch : {epoch}, Loss : {np.mean(train_loss_list):.3f}, Total Accuracy : {train_answers / total_len:.3f}, Cur Accuracy : {cur_answers / cur_len:.3f}, Mem Accuracy : {mem_answers / mem_len:.3f}"
+        else:
+            desc = f"Train Epoch : {epoch}, Loss : {np.mean(train_loss_list):.3f}, Total Accuracy : {train_answers / total_len:.3f}"
         pbar.set_description(desc)
-
-        if args.use_memory and epoch == args.epoch and args.learning_mode == 'offline':
-            memory_in_epoch = accumulate_candidate(memory_option=args.memory_option, 
-                                                   model=model, 
-                                                   energy=cur_energies,
-                                                   memory_x=memory_x, 
-                                                   memory_y=memory_y, 
-                                                   memory_energy=memory_energy, 
-                                                   joint_targets=joint_targets[:cur_data_size], 
-                                                   y_ans_idx=y_ans_idx[:cur_data_size], 
-                                                   x=x[:cur_data_size], 
-                                                   y=y[:cur_data_size])
-        elif args.use_memory and args.learning_mode == 'online':
+        # if task_num > 1:
+        #     task_energy = torch.cat((task_energy, cur_energies.gather(dim=1, index=y_ans_idx[:cur_data_size])))
+        # else:
+        #     task_energy = torch.cat((task_energy, ))
+        
+        if args.use_memory and args.learning_mode == 'online':
             for i in range(args.num_classes // args.num_tasks): # class per task만큼 순회
                 cl = torch.tensor(list(task_class_set)[-1*(args.num_classes // args.num_tasks):])[i] # i번째에 해당하는 class (i : task class set의 index, cl : index에 해당하는 class)
                 idx = (y == cl).nonzero(as_tuple=True) # 현재 task에 해당하는 class들만 slicing후 indexing해서 class 선택
@@ -206,11 +213,17 @@ def train_one_epoch(args,
                     if (it+1) % 100 == 0:
                         torch.save(new_memory_energy, os.path.join('asset', 'online_bin_energy', f"Task_{task_num}_Iter_{it}_class_{cl}_memory_bin_energy.pt"))
     
+    if args.use_memory and epoch == args.epoch and args.learning_mode == 'offline':
+            memory_in_epoch = accumulate_candidate(loader=loader,
+                                                   device=device,
+                                                   memory_option=args.memory_option, 
+                                                   model=model,
+                                                   task_class_set=task_class_set)
     if args.learning_mode == 'online':
         memory_in_epoch = candidates
-        
+    
     total_class_set = total_class_set.union(task_class_set)
-    return total_class_set, train_answers / total_len, train_loss_list, memory_in_epoch
+    return total_class_set, train_answers / total_len, train_loss_list, memory_in_epoch, task_energy
 
 
 def test_total(args,
@@ -354,11 +367,11 @@ def main(args):
                        name=args.run_name,
                        config=args)
             wandb.watch(model)
-            
+    after_train_energies = []
     for task_num in range(len(train_loaders)):
         train_loader = train_loaders[task_num]
         print(f"=================Start Training Task{task_num+1}=================")
-        _, task_infos, total_class_set, model, memory_in_epoch = trainer(args=args,
+        _, task_infos, total_class_set, model, memory_in_epoch, task_energy, final_energies = trainer(args=args,
                                                                          device=device,
                                                                          train_loader=train_loader, 
                                                                          test_loaders=test_loaders[:task_num+1],
@@ -371,6 +384,12 @@ def main(args):
                                                                          acc_matrix=acc_matrix,
                                                                          coresets=coreset_manager.get_coreset() \
                                                                              if args.learning_mode == 'offline' else coreset)
+        after_train_energies.extend(final_energies)
+        if not os.path.exists('asset'):
+            os.mkdir('asset')
+            if not os.path.exists('asset/task_energies'):
+                os.mkdir('asset/task_energies')
+            torch.save(task_energy, f"asset/tasK_energies/Task_{task_num+1}_energy.pt")
         if args.use_memory and args.learning_mode == 'offline':
             print("Starting memory generation")
             coreset_manager.add_coreset(model =model,
@@ -378,11 +397,12 @@ def main(args):
                                         memory=memory_in_epoch)
             wasserstein_dist_df = coreset_manager.get_wasserstein_dist_df()
             energy_dist_df = coreset_manager.get_energy_dist_df()
+        
         elif args.use_memory and args.learning_mode == 'online':
             memory_x, memory_y = memory_in_epoch
             new_coreset = Coreset_Dataset(torch.cat(memory_x), torch.cat(memory_y))
             coreset = ConcatDataset([coreset, new_coreset])
-            
+        
         if args.save_matrices:
             for i in range(task_infos.__len__('pred_classes')):
                 np.save(os.path.join(args.data_root, f'task{task_num+1}_test{i+1}_pred'),
@@ -424,7 +444,11 @@ def main(args):
                 wandb.log({
                 f"Task {i+1} Test Accuracy" : task_acc[i]
                 })
-                
+    ##### 임시 구현 #####
+    os.mkdir('asset/after_train_energies')
+    for i in range(len(after_train_energies)):
+        torch.save(after_train_energies[i], f"asset/Class_{i}_after_train_energies.pt")    
+    ####################            
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--data_root', type=str, default='./data')
@@ -458,7 +482,7 @@ if __name__ == "__main__":
     parser.add_argument('--save_gt_fig', default=False, action='store_true')
     parser.add_argument('--save_pred_tsne_fig', default=False, action='store_true')
     parser.add_argument('--save_pred_tsne_with_gt_label_fig', default=False, action='store_true')
-    parser.add_argument('--seed', type=int, default=0)
+    parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--checkpoint_path', type=str, default='./checkpoint')
     parser.add_argument('--checkpoint', type=str, default='')
     parser.add_argument('--wandb', default=True, action='store_true')

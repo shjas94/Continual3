@@ -190,21 +190,28 @@ class Offline_Coreset_Manager(object):
         return len(self.coreset)
     
 @torch.no_grad()
-def accumulate_candidate(memory_option, model, energy, memory_x, memory_y, memory_energy, joint_targets, y_ans_idx, x, y):
-        memory_x = torch.cat((memory_x, x.detach().cpu())) 
-        memory_y = torch.cat((memory_y, y.detach().cpu()))
+def accumulate_candidate(loader, device, memory_option, model, task_class_set):
+    memory_x, memory_y = torch.empty(0), torch.empty(0)
+    pbar = tqdm(loader, total=loader.__len__(), position=0, leave=True)
+    for sample in pbar:
+        x, y = sample[0].to(device), sample[1].to(device)
+        joint_targets = get_target(task_class_set, y).to(device).long()
+        y_ans_idx     = get_ans_idx(task_class_set, y).to(device)
+        energy = model(x, joint_targets)
         if memory_option == 'confused_pred':
-            true_index = (y - min(y)).type(torch.LongTensor).view(-1, 1).detach().cpu()
+            y_ans_idx = y_ans_idx.detach().cpu()
             energy_cpu = energy.detach().cpu()
-            true_energy = torch.gather(energy_cpu, dim=1, index=true_index)
-            other_energy = energy_cpu[energy_cpu != true_energy].view(energy_cpu.shape[0], -1)
+            true_energy = torch.gather(energy_cpu, dim=1, index=y_ans_idx)
+            other_energy = energy_cpu[: , energy_cpu != true_energy].view(energy_cpu.shape[0], -1) # 검증 필요
             neg_energy = torch.min(other_energy, dim=1, keepdim=True)[0]
             memory_energy = torch.cat((memory_energy, true_energy-neg_energy))
         else:
-            energy = model(x, joint_targets)
             true_energy = energy.gather(dim=1, index=y_ans_idx).detach().cpu()
-            memory_energy = torch.cat((memory_energy, true_energy)) # |bx1|    
-        return [memory_x.detach().cpu(), memory_y.detach().cpu(), memory_energy.detach().cpu()]
+            memory_energy = torch.cat((memory_energy, true_energy)) # |bx1|
+        memory_x = torch.cat((memory_x, x.detach().cpu()))
+        memory_y = torch.cat((memory_y, y.detach().cpu()))
+
+    return [memory_x.detach().cpu(), memory_y.detach().cpu(), memory_energy.detach().cpu()]
 
 @torch.no_grad()
 def online_bin_based_sampling(model, memory_size, class_per_tasks, candidates, task_class_set, x, y, device):
