@@ -94,9 +94,9 @@ class ResNet(nn.Module):
         self.avgpool = nn.AdaptiveMaxPool2d(1)
         self.num_classes = args.num_classes
         self.embedding = nn.Embedding(args.num_classes, 512)
-        self.fc1 = nn.Linear(self.block_cfg[args.model][-1], 512)
-        self.fc2 = nn.Linear(512, 128)
-        self.fc3 = nn.Linear(128, 1)
+        # self.fc1 = nn.Linear(self.block_cfg[args.model][-1], 512)
+        # self.fc2 = nn.Linear(512, 128)
+        self.fc3 = nn.Linear(512, 1)
     def _get_network(self, args, block_cfg, bottleneck_ratio):
         prev_channel = 64
         networks = list()
@@ -116,11 +116,11 @@ class ResNet(nn.Module):
         z = z.view(bs, -1)
         y_z = self.embedding(y)
         y_z = F.softmax(y_z, dim=-1) * y_z.shape[-1]
-        z = self.fc1(z)
+        # z = self.fc1(z)
         z = z[:,None,:].expand_as(y_z)
         z = z * y_z
         # rep = z
-        z = self.fc2(z)
+        # z = self.fc2(z)
         return self.fc3(z).view(bs, -1)
 
 class EBM_Beginning(nn.Module):
