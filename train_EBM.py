@@ -2,6 +2,7 @@ import argparse
 import os
 import torch
 import numpy as np
+import pandas as pd
 from tqdm import tqdm
 import wandb
 import torchvision.transforms as transforms
@@ -25,6 +26,7 @@ def trainer(args,
             optimizer,
             criterion, 
             task_num,
+            wandb,
             acc_matrix=None,
             coresets  =None):
     model.train()
@@ -51,6 +53,7 @@ def trainer(args,
                                                                           task_class_set =task_class_set[-1], 
                                                                           total_class_set=total_class_set,
                                                                           task_num=task_num,
+                                                                          wandb=wandb,
                                                                           coresets=coresets,
                                                                           candidates=candidates \
                                                                               if args.learning_mode == 'online' else None)
@@ -80,7 +83,7 @@ def train_one_epoch(args,
                     task_class_set, 
                     total_class_set,
                     task_num,
-                    logger=None,
+                    wandb=None,
                     coresets=None,
                     candidates=None):
     pbar = tqdm(loader, total=loader.__len__(), position=0, leave=True)
@@ -138,7 +141,7 @@ def train_one_epoch(args,
                                      classes_per_task=args.num_classes//args.num_tasks,
                                      task_class_set=task_class_set,
                                      coreset_mode=True)
-                loss = cur_loss + args.lam*mem_loss
+                loss = cur_loss + args.lam**(task_num)*mem_loss
             else:
                 loss = criterion(energy=energy,
                                  y_ans_idx=y_ans_idx,
@@ -158,13 +161,19 @@ def train_one_epoch(args,
                                      device=device,
                                      class_per_task=args.num_classes//args.num_tasks,
                                      coreset_mode=True)
-                loss = cur_loss + mem_loss
+                loss = cur_loss + args.lam**task_num*mem_loss
             else:
                 loss = criterion(energy=energy,
                                  y_ans_idx=y_ans_idx,
                                  device=device,
                                  class_per_task=args.num_classes//args.num_tasks,
                                  coreset_mode=False)
+        elif args.criterion == 'contrastive_divergence_confused':
+            cur_energies, mem_energies = energy[:cur_data_size, :], energy[cur_data_size:, :]
+            loss = criterion(energy=energy,
+                             y_ans_idx=y_ans_idx,
+                             device=device,
+                             num_classes=len(task_class_set))
         cur_len += cur_data_size
         mem_len += x.size(0) - cur_data_size
         train_answers += calculate_answer(energy, y_ans_idx)
@@ -176,6 +185,10 @@ def train_one_epoch(args,
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.)
         optimizer.step()
         train_loss_list.append(loss.item())
+        # wandb.log({
+        #     f"{task_num}th task Train Batch Loss" : loss.item(),
+        #     f"{task_num}th task Train Batch Acc" : calculate_answer(energy, y_ans_idx) / energy.size(0)
+        # })
         if args.use_memory and task_num > 1:
             desc = f"Train Epoch : {epoch}, Loss : {np.mean(train_loss_list):.3f}, Total Accuracy : {train_answers / total_len:.3f}, Cur Accuracy : {cur_answers / cur_len:.3f}, Mem Accuracy : {mem_answers / mem_len:.3f}"
         else:
@@ -349,7 +362,7 @@ def main(args):
         device = torch.device('cpu')
     model.to(device)
     train_loaders, test_loaders, task_class_sets = prepare_data(args)
-    acc_matrix = np.zeros((args.num_tasks, args.num_tasks))
+    # acc_matrix = np.zeros((args.num_tasks, args.num_tasks))
     optimizer = get_optimizer(args.optimizer, lr=args.lr, parameters=model.parameters(), weight_decay=args.weight_decay)
     criterion = get_criterion(args.criterion, args.use_memory)
     total_class_set = set()
@@ -368,6 +381,7 @@ def main(args):
                        config=args)
             wandb.watch(model)
     after_train_energies = []
+    acc_matrix = pd.DataFrame(index=np.arange(args.num_tasks), columns=np.arange(args.num_tasks))
     for task_num in range(len(train_loaders)):
         train_loader = train_loaders[task_num]
         print(f"=================Start Training Task{task_num+1}=================")
@@ -382,14 +396,15 @@ def main(args):
                                                                          criterion=criterion, 
                                                                          task_num=task_num+1,
                                                                          acc_matrix=acc_matrix,
+                                                                         wandb=wandb,
                                                                          coresets=coreset_manager.get_coreset() \
                                                                              if args.learning_mode == 'offline' else coreset)
         after_train_energies.extend(final_energies)
         if not os.path.exists('asset'):
             os.mkdir('asset')
-            if not os.path.exists('asset/task_energies'):
-                os.mkdir('asset/task_energies')
-            torch.save(task_energy, f"asset/tasK_energies/Task_{task_num+1}_energy.pt")
+        if not os.path.exists('asset/task_energies'):
+            os.mkdir('asset/task_energies')
+        torch.save(task_energy, f"asset/task_energies/Task_{task_num+1}_energy.pt")
         if args.use_memory and args.learning_mode == 'offline':
             print("Starting memory generation")
             coreset_manager.add_coreset(model =model,
@@ -437,7 +452,7 @@ def main(args):
             total_y = np.concatenate(task_infos.get_infos('ys'), axis=0)
             draw_tsne_proj(args.fig_root, total_pred_rep, total_y, args.num_classes // args.num_tasks, task_num+1, args.seed, \
                 task_infos.get_infos('lowest_img_infos'), mcolors.CSS4_COLORS, 'pred_with_gt_labels', dataset=args.dataset)
-            
+        acc_matrix.iloc[task_num, :] = task_infos.get_infos('task_acc')
         if args.wandb:
             task_acc = task_infos.get_infos('task_acc')
             for i in range(task_infos.__len__('task_acc')):
@@ -445,9 +460,11 @@ def main(args):
                 f"Task {i+1} Test Accuracy" : task_acc[i]
                 })
     ##### 임시 구현 #####
-    os.mkdir('asset/after_train_energies')
+    if not os.path.exists('asset/after_train_energies'):
+        os.mkdir('asset/after_train_energies')
     for i in range(len(after_train_energies)):
-        torch.save(after_train_energies[i], f"asset/Class_{i}_after_train_energies.pt")    
+        torch.save(after_train_energies[i], f"asset/after_train_energies/Class_{i}_after_train_energies.pt")
+    acc_matrix.to_csv('memory_100.csv')    
     ####################            
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -466,7 +483,7 @@ if __name__ == "__main__":
     parser.add_argument('--optimizer', type=str, default='adam', choices=('adam', 'adamw', 'sgd'))
     parser.add_argument('--lr', type=float, default=1e-06)
     parser.add_argument('--weight_decay', type=float, default=0.0)
-    parser.add_argument('--criterion', type=str, default='nll_energy', choices=('nll_energy', 'contrastive_divergence'))
+    parser.add_argument('--criterion', type=str, default='nll_energy', choices=('nll_energy', 'contrastive_divergence', 'contrastive_divergence_confused'))
     parser.add_argument('--learning_mode', type=str, default='offline', choices=('offline', 'online'))
     parser.add_argument('--epoch', type=int, default=20)
     parser.add_argument('--use_memory', action='store_true', default=True, help='use memory buffer for CIL if True')

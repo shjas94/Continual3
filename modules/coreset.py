@@ -191,7 +191,7 @@ class Offline_Coreset_Manager(object):
     
 @torch.no_grad()
 def accumulate_candidate(loader, device, memory_option, model, task_class_set):
-    memory_x, memory_y = torch.empty(0), torch.empty(0)
+    memory_x, memory_y, memory_energy = torch.empty(0), torch.empty(0), torch.empty(0)
     pbar = tqdm(loader, total=loader.__len__(), position=0, leave=True)
     for sample in pbar:
         x, y = sample[0].to(device), sample[1].to(device)

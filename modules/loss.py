@@ -31,12 +31,28 @@ def _calculate_energy_negative(energy, y_ans_idx, device, class_per_task, corese
             counter+=1
     return energy.gather(dim=1, index=y_neg_idx.to(device))
 
+def _calculate_energy_negative_with_confused_energy(energy, y_ans_idx, num_classes, device):
+    mask = torch.nn.functional.one_hot(y_ans_idx, num_classes)
+    mask = ~mask.bool().to(device)
+    negative_full_energies = torch.masked_select(energy, mask).reshape(energy.size(0), -1)
+    negative_max = torch.max(negative_full_energies, dim=1)[0]
+    return negative_max
 
 def contrastive_divergence(energy, y_ans_idx, device, class_per_task, coreset_mode):
     energy_pos = _calculate_energy_positive(energy, y_ans_idx)
     energy_neg = _calculate_energy_negative(energy, y_ans_idx, device, class_per_task, coreset_mode)
-    energy_partition = torch.cat((-1*energy_pos, -1*energy_neg), dim=1)
-    cdiv_loss = (energy_pos+torch.logsumexp(energy_partition, dim=1)).mean()
+    # energy_partition = -1*torch.cat((energy_pos, energy_neg), dim=1)
+    # cdiv_loss = energy_pos+torch.logsumexp(energy_partition, dim=1)
+    cdiv_loss = energy_pos - energy_neg
+    loss = cdiv_loss.mean()
+    return loss
+
+def contrastive_divergence_with_confused_energy(energy, y_ans_idx, device, num_classes):
+    energy_pos = _calculate_energy_positive(energy, y_ans_idx)
+    energy_neg = _calculate_energy_negative_with_confused_energy(energy, y_ans_idx, num_classes, device).view(-1,1)
+
+    energy_partition = -1*torch.cat((energy_pos, energy_neg), dim=1)
+    cdiv_loss = energy_pos+torch.logsumexp(energy_partition, dim=1)
     loss = cdiv_loss.mean()
     return loss
 
@@ -45,6 +61,8 @@ def get_criterion(loss, use_memory):
         return energy_nll_loss
     elif loss == 'contrastive_divergence':
         return contrastive_divergence
+    elif loss == 'contrastive_divergence_confused':
+        return contrastive_divergence_with_confused_energy
     elif loss == 'cross_entropy':
         return torch.nn.CrossEntropyLoss()
     else:

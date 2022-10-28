@@ -46,7 +46,7 @@ def get_optimizer(optimizer, lr, parameters, weight_decay):
     elif optimizer == 'adamw':
         return AdamW(parameters, lr, weight_decay=weight_decay)
     elif optimizer == 'sgd':
-        return SGD(parameters, lr, weight_decay=weight_decay)
+        return SGD(parameters, lr, weight_decay=weight_decay, momentum=0.9)
     else:
         raise NotImplementedError
 
@@ -88,6 +88,7 @@ def calculate_final_energy(model, device, loader, task_class_set):
     
     cur_task_class = torch.unique(answers, sorted=True)
     for cls in cur_task_class:
-        idx = (y_ans_idx == cls).nonzero(as_tuple=True)[0]
+        idx = (answers == cls).nonzero(as_tuple=True)[0]
         cls_energies.append(task_energy[idx,:])
+        
     return cls_energies
