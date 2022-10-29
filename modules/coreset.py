@@ -19,7 +19,7 @@ class Memory(nn.Module):
         
         print(f"Total Size of Buffer : {self.memory_size}")
         self.flattened_shape  = args.img_size*args.img_size*args.num_channels
-        self.task_id          = 1
+        self.task_id          = 1 # 현재 training 중인 task (task 시작 전 update)
         self.num_cls_per_task = args.num_classes / args.num_tasks
         self.cur_memory_size  = self.memory_size // (self.num_cls_per_task*self.task_id) # 현재 저장할 class당 memory 크기
         
@@ -47,9 +47,10 @@ class Memory(nn.Module):
     def energy(self):
         return self.memory_energy
     
-    def _set_task_id(self, t):
+    def set_task_id_and_memory_size(self, t):
         self.task_id = t
-    
+        self._set_cur_memory_size()
+        
     def _set_cur_memory_size(self):
         self.cur_memory_size = self.memory_size // (self.num_cls_per_task*self.task_id)
         
@@ -72,10 +73,9 @@ class Memory(nn.Module):
             self.memory_energy[i*self.cur_memory_size : (i+1)*self.cur_memory_size, :]      = memory_energy_before[bin_idx][bins]
     
     def _merge_samples(self):
-        former_classes_in_memory = (self.task_id-2)*self.num_cls_per_task
-        classes_in_memory        = (self.task_id-1) * self.num_cls_per_task
-        former_memory_size       = self.memory_size // classes_in_memory # new_.. 을 제외한 이전까지 저장되어있던 메모리의 크기
-        new_memory_size          = self.new_x[0].size(0)
+        former_classes_in_memory = (self.task_id-2) * self.num_cls_per_task
+        classes_in_memory        = (self.task_id-1) * self.num_cls_per_task # 새롭게 sampling한 것들까지 포함
+        former_memory_size       = self.memory_size // classes_in_memory # drop 이후 new_.. 을 제외한 이전까지 저장되어있던 메모리의 크기
         
         all_new_x      = torch.cat(self.new_x, dim=0)
         all_new_y      = torch.cat(self.new_y, dim=0)
@@ -89,15 +89,14 @@ class Memory(nn.Module):
         self.new_x      = [torch.empty(0) for _ in range(self.num_cls_per_task)]
         self.new_y      = [torch.empty(0) for _ in range(self.num_cls_per_task)]
         self.new_energy = [torch.empty(0) for _ in range(self.num_cls_per_task)]
-    
+    # To Do 검토 필요
     def update_memory(self, task_id):
         # 다음 task 시작 직전에 task_id 갱신
         # class당 memory 크기 갱신
         # memory size 업데이트 후 기존 memory에서 일부 sample drop하기 ex. task 1 -> task 2 : (100, 100) -> (50, 50)
         # 그 다음으로 memory_...와 new_... concat 해줌으로써 memory update 최종 완료
         self._drop_samples()
-        self._set_task_id(task_id)
-        self._set_cur_memory_size()
+        self.set_task_id_and_memory_size(task_id)
         self._merge_samples()
       
     def add_sample_online(self, x, y, energy, cur_cls_idx):
@@ -117,8 +116,8 @@ class Memory(nn.Module):
         self.new_y[cur_cls_idx]      = torch.cat((self.new_y[cur_cls_idx], y), dim=0)
         self.new_energy[cur_cls_idx] = torch.cat((self.new_energy[cur_cls_idx], energy.view(-1)), dim=0)
         
-        if self.new_x.size(0) > self.cur_memory_size - self.new_x[cur_cls_idx].size(0): 
-            # 남은 slot 크기보다 현재 batch 크기가 더 크다면
+        if self.new_x[cur_cls_idx].size(0) > self.cur_memory_size: 
+            # 현재 저장된 memory의 크기가 class당 최대 메모리 크기보다 크다면
             # -> bin sampling
             _, bin_idx = torch.sort(self.new_energy[cur_cls_idx])
             bins       = torch.linspace(0, len(bin_idx), self.cur_memory_size).long()
@@ -145,7 +144,7 @@ class Memory(nn.Module):
     @torch.no_grad()
     def add_sample_offline(self, loader, task_class_set, model, device):
         '''
-        Calculate Energies and add 
+        Calculate Energies
         '''
         cur_task_classes = sorted(list(task_class_set)[-1*self.num_cls_per_task:])
         temp_memory_x      = torch.empty(0)
@@ -157,11 +156,11 @@ class Memory(nn.Module):
             joint_targets = get_target(task_class_set, y).to(device).long()
             y_ans_idx     = get_ans_idx(task_class_set, y).to(device)
             energy        = model(x, joint_targets)
-            true_energy   = energy.gather(dim=1, index=y_ans_idx)
+            true_energy   = energy.gather(dim=1, index=y_ans_idx) # |bs x 1| -> output with true class
             
             temp_memory_x      = torch.cat((temp_memory_x, x.detach().cpu()))
             temp_memory_y      = torch.cat((temp_memory_y, y.detach().cpu()))
-            temp_memory_energy = torch.cat((temp_memory_energy, true_energy.detach().cpu()))
+            temp_memory_energy = torch.cat((temp_memory_energy, true_energy.detach().cpu().view(-1)))
         
         for cur_cls_idx, cl in enumerate(cur_task_classes):
             index                        = (temp_memory_y == torch.tensor(cl)).nonzero(as_tuple=True)
