@@ -7,9 +7,9 @@ import wandb
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader, RandomSampler, ConcatDataset
 from modules.models import get_model
-from modules.dataset import prepare_data, get_augmentation, Coreset_Dataset
+from modules.dataset import prepare_data, Coreset_Dataset
 from modules.loss import get_criterion
-from modules.coreset import Offline_Coreset_Manager, accumulate_candidate, online_bin_based_sampling, add_online_coreset
+from modules.coreset import Memory, accumulate_candidate, online_bin_based_sampling, add_online_coreset
 from utils.utils import seed_everything, get_optimizer, calculate_answer, get_target, get_ans_idx, calculate_final_energy
 from utils.drawer import draw_confusion, draw_tsne_proj
 from utils.intermediate_infos import IntermediateInfos
@@ -26,13 +26,8 @@ def trainer(args,
             criterion, 
             task_num,
             acc_matrix=None,
-            coresets  =None):
+            memory    =None):
     model.train()
-    if args.learning_mode == 'online':
-        candidates_x = [torch.empty(0) for _ in range(args.num_classes // args.num_tasks)]
-        candidates_y = [torch.empty(0) for _ in range(args.num_classes // args.num_tasks)]
-        candidates = (candidates_x, candidates_y)
-    
     for p in model.parameters():
         p.require_grad = True
     if task_num != 1:
@@ -41,7 +36,7 @@ def trainer(args,
             temp_task_class_set = temp_task_class_set.union(task_class_set[i])
         task_class_set = [temp_task_class_set]
     for e in range(args.epoch):
-        total_class_set, train_accs, _, memory_in_epoch, task_energy = train_one_epoch(args=args,
+        total_class_set, train_accs, _, memory = train_one_epoch(args=args,
                                                                           epoch=e+1,
                                                                           device=device,
                                                                           model=model,
@@ -51,11 +46,7 @@ def trainer(args,
                                                                           task_class_set =task_class_set[-1], 
                                                                           total_class_set=total_class_set,
                                                                           task_num=task_num,
-                                                                          coresets=coresets,
-                                                                          candidates=candidates \
-                                                                              if args.learning_mode == 'online' else None)
-        
-        
+                                                                          memory=memory)
         task_infos = test_total(args=args,
                                 device=device,
                                 model=model, 
@@ -63,12 +54,20 @@ def trainer(args,
                                 total_class_set=total_class_set,
                                 task_num=task_num,
                                 acc_matrix=acc_matrix)
-    final_energies = calculate_final_energy(model=model, 
-                                      device=device, 
-                                      loader=train_loader, 
-                                      task_class_set=task_class_set[-1])
+        if args.use_memory and args.learning_mode == 'offline' and e+1 == args.epoch:
+            memory.add_sample_offline(loader=train_loader, 
+                                      task_class_set=task_class_set[-1], 
+                                      model=model, 
+                                      device=device)
+        if args.use_memory and e+1 == args.epoch and task_num != 1:
+            memory.update_memory(task_num+1)
+            
+    # final_energies = calculate_final_energy(model=model, 
+    #                                         device=device, 
+    #                                         loader=train_loader, 
+    #                                         task_class_set=task_class_set[-1])
   
-    return train_accs, task_infos, total_class_set, model, memory_in_epoch, task_energy, final_energies
+    return train_accs, task_infos, total_class_set, model, memory
         
 def train_one_epoch(args,
                     epoch,
@@ -81,21 +80,12 @@ def train_one_epoch(args,
                     total_class_set,
                     task_num,
                     logger=None,
-                    coresets=None,
-                    candidates=None):
+                    memory=None):
     pbar = tqdm(loader, total=loader.__len__(), position=0, leave=True)
     train_loss_list = []
     train_answers, cur_answers, mem_answers, total_len, cur_len, mem_len = 0, 0, 0, 0, 0, 0
-    memory_x, memory_y, memory_energy, memory_rep_in_epoch, task_energy = torch.empty(0), torch.empty(0), torch.empty(0), torch.empty(0), torch.empty(0)
-    memory_in_epoch = None
     
-    if args.use_memory and task_num != 1:
-        memory_sampler = RandomSampler(data_source=coresets, 
-                                       replacement=False)
-        memory_loader = DataLoader(dataset=coresets,
-                                   sampler=memory_sampler,
-                                   batch_size=args.batch_size,
-                                   drop_last=False)
+  
     for it, sample in enumerate(pbar):
         optimizer.zero_grad()
         if args.dataset == "splitted_mnist" or args.dataset == "cifar10" or args.dataset == "cifar100" or args.dataset == "tiny_imagenet":
@@ -114,7 +104,7 @@ def train_one_epoch(args,
         y_ans_idx     = get_ans_idx(task_class_set, y).to(device)
         total_len += x.size(0)
         if args.use_memory and task_num > 1:
-            mem_sample = next(iter(memory_loader))
+            mem_sample = memory.sample()
             mem_x = mem_sample[0].to(device)
             mem_y = mem_sample[1].to(device)
             mem_joint_targets = get_target(task_class_set, mem_y).to(device) 
@@ -181,49 +171,18 @@ def train_one_epoch(args,
         else:
             desc = f"Train Epoch : {epoch}, Loss : {np.mean(train_loss_list):.3f}, Total Accuracy : {train_answers / total_len:.3f}"
         pbar.set_description(desc)
-        # if task_num > 1:
-        #     task_energy = torch.cat((task_energy, cur_energies.gather(dim=1, index=y_ans_idx[:cur_data_size])))
-        # else:
-        #     task_energy = torch.cat((task_energy, ))
         
+        # To Do
         if args.use_memory and args.learning_mode == 'online':
-            for i in range(args.num_classes // args.num_tasks): # class per task만큼 순회
-                cl = torch.tensor(list(task_class_set)[-1*(args.num_classes // args.num_tasks):])[i] # i번째에 해당하는 class (i : task class set의 index, cl : index에 해당하는 class)
-                idx = (y == cl).nonzero(as_tuple=True) # 현재 task에 해당하는 class들만 slicing후 indexing해서 class 선택
+            for i in range(args.num_classes // args.num_tasks): 
+                cl = torch.tensor(list(task_class_set)[-1*(args.num_classes // args.num_tasks):])[i] 
+                idx = (y == cl).nonzero(as_tuple=True) 
                 x_cur = x[idx]
                 y_cur = y[idx]
-                if args.memory_size - candidates[1][i].size(0) >= y_cur.size(0): # memory에 남아 있는 공간이 batch 내의 해당 class에 속하는 data의 크기보다 크다면
-                    candidates[0][i] = torch.cat((candidates[0][i], x_cur.detach().cpu()))
-                    candidates[1][i] = torch.cat((candidates[1][i], y_cur.detach().cpu()))
-                else: # 아니라면 -> online bin sampling 수행
-                    new_candidates_i, new_memory_energy = online_bin_based_sampling(model=model, 
-                                                                                    memory_size=args.memory_size, 
-                                                                                    class_per_tasks=args.num_classes//args.num_tasks,
-                                                                                    candidates=(candidates[0][i], candidates[1][i]),
-                                                                                    task_class_set=task_class_set, 
-                                                                                    x=x_cur, 
-                                                                                    y=y_cur,
-                                                                                    device=device)
-                    candidates[0][i] = new_candidates_i[0]
-                    candidates[1][i] = new_candidates_i[1]
-                    if not os.path.exists('asset'):
-                        os.mkdir('asset')
-                    if not os.path.exists(os.path.join('asset', 'online_bin_energy')):
-                        os.mkdir(os.path.join('asset', 'online_bin_energy'))        
-                    if (it+1) % 100 == 0:
-                        torch.save(new_memory_energy, os.path.join('asset', 'online_bin_energy', f"Task_{task_num}_Iter_{it}_class_{cl}_memory_bin_energy.pt"))
-    
-    if args.use_memory and epoch == args.epoch and args.learning_mode == 'offline':
-            memory_in_epoch = accumulate_candidate(loader=loader,
-                                                   device=device,
-                                                   memory_option=args.memory_option, 
-                                                   model=model,
-                                                   task_class_set=task_class_set)
-    if args.learning_mode == 'online':
-        memory_in_epoch = candidates
-    
+                memory.add_sample_online(x_cur, y_cur, i)
+
     total_class_set = total_class_set.union(task_class_set)
-    return total_class_set, train_answers / total_len, train_loss_list, memory_in_epoch, task_energy
+    return total_class_set, train_answers / total_len, train_loss_list, memory
 
 
 def test_total(args,
@@ -317,7 +276,6 @@ def test_by_task(args,
             pred_indices = torch.cat((pred_indices, pred_index), dim=0)
             pred_classes = torch.cat((pred_classes, pred_class), dim=0)
             ys = torch.cat((ys, y), dim=0)
-        ######################################
         
         answer_sheet = pred_classes == ys
         accumulated_acc = np.sum(answer_sheet.numpy()) / len(ys.numpy())
@@ -353,14 +311,8 @@ def main(args):
     optimizer = get_optimizer(args.optimizer, lr=args.lr, parameters=model.parameters(), weight_decay=args.weight_decay)
     criterion = get_criterion(args.criterion, args.use_memory)
     total_class_set = set()
-    available_memory_options = ['bin_based', 'random_sample', 'low_energy', 'high_energy', 'min_score', 'max_score', 'confused_pred']
-    if args.use_memory and args.learning_mode == 'online':
-        coreset = Coreset_Dataset(torch.empty(0), torch.empty(0)) # To Do
-    elif args.use_memory and args.learning_mode == 'offline':
-        coreset_manager = Offline_Coreset_Manager(args=args,
-                                              num_classes_per_tasks=args.num_classes // args.num_tasks,
-                                              num_memory_per_class =args.memory_size // args.num_classes,
-                                              available_memory_options=available_memory_options)
+    if args.use_memory:
+        memory = Memory(args, args.fixed_memory_slot)
     if args.wandb:
             wandb.init(project='EBM-Continual',
                        group=args.dataset,
@@ -371,7 +323,7 @@ def main(args):
     for task_num in range(len(train_loaders)):
         train_loader = train_loaders[task_num]
         print(f"=================Start Training Task{task_num+1}=================")
-        _, task_infos, total_class_set, model, memory_in_epoch, task_energy, final_energies = trainer(args=args,
+        _, task_infos, total_class_set, model, memory = trainer(args=args,
                                                                          device=device,
                                                                          train_loader=train_loader, 
                                                                          test_loaders=test_loaders[:task_num+1],
@@ -382,27 +334,7 @@ def main(args):
                                                                          criterion=criterion, 
                                                                          task_num=task_num+1,
                                                                          acc_matrix=acc_matrix,
-                                                                         coresets=coreset_manager.get_coreset() \
-                                                                             if args.learning_mode == 'offline' else coreset)
-        after_train_energies.extend(final_energies)
-        if not os.path.exists('asset'):
-            os.mkdir('asset')
-            if not os.path.exists('asset/task_energies'):
-                os.mkdir('asset/task_energies')
-            torch.save(task_energy, f"asset/tasK_energies/Task_{task_num+1}_energy.pt")
-        if args.use_memory and args.learning_mode == 'offline':
-            print("Starting memory generation")
-            coreset_manager.add_coreset(model =model,
-                                        device=device,
-                                        memory=memory_in_epoch)
-            wasserstein_dist_df = coreset_manager.get_wasserstein_dist_df()
-            energy_dist_df = coreset_manager.get_energy_dist_df()
-        
-        elif args.use_memory and args.learning_mode == 'online':
-            memory_x, memory_y = memory_in_epoch
-            new_coreset = Coreset_Dataset(torch.cat(memory_x), torch.cat(memory_y))
-            coreset = ConcatDataset([coreset, new_coreset])
-        
+                                                                         memory=memory)
         if args.save_matrices:
             for i in range(task_infos.__len__('pred_classes')):
                 np.save(os.path.join(args.data_root, f'task{task_num+1}_test{i+1}_pred'),
@@ -473,6 +405,7 @@ if __name__ == "__main__":
     parser.add_argument('--memory_option', type=str, default='bin_based', choices=('random_sample', 'low_energy', \
                                                                                        'high_energy', 'min_score', 'max_score',\
                                                                                        'confused_pred', 'representation', 'bin_based'))
+    parser.add_argument('--fixed_memory_slot', action='store_true', default=True)
     parser.add_argument('--img_size', type=int, default=32)
     parser.add_argument('--lam', type=float, default=1.0, help='term for balancing current loss and memory loss')
     parser.add_argument('--num_channels', type=int, default=3)

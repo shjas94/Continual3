@@ -88,6 +88,6 @@ def calculate_final_energy(model, device, loader, task_class_set):
     
     cur_task_class = torch.unique(answers, sorted=True)
     for cls in cur_task_class:
-        idx = (y_ans_idx == cls).nonzero(as_tuple=True)[0]
+        idx = (answers == cls).nonzero(as_tuple=True)[0]
         cls_energies.append(task_energy[idx,:])
     return cls_energies

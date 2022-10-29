@@ -1,238 +1,177 @@
 
-import os
-import yaml
 from tqdm import tqdm
 import torch
-from torch.utils.data import ConcatDataset
+import torch.nn as nn
 import numpy as np
 import pandas as pd
 from scipy.stats import wasserstein_distance, energy_distance
 from modules.dataset import Coreset_Dataset
 from utils.utils import get_target, get_ans_idx
-# main 함수에서 loader 별로 for문 돌기 전에 선언
-class Offline_Coreset_Manager(object):
-    def __init__(self, args, num_classes_per_tasks, num_memory_per_class, available_memory_options):
-        self.args = args    
-        self.coreset = Coreset_Dataset(torch.empty(0), torch.empty(0))
-        self.num_classes_per_tasks = num_classes_per_tasks
-        self.num_memory_per_tasks = num_memory_per_class
-        self.classes = self._get_class_name()
-        self.wasserstein_dist_df = pd.DataFrame(index=available_memory_options, columns=self.classes)
-        self.energy_dist_df = pd.DataFrame(index=available_memory_options, columns=self.classes)
-        self.memory_energy = []
-                
-    def add_coreset(self, model, device, memory, augmentation=None):
-        x, y, energy = memory
-        cl_list = sorted(list(set(list(y.numpy()))))
-        
-        for cur_class, cl in tqdm(enumerate(cl_list[-1*self.num_classes_per_tasks:]), desc="Getting Coreset"):
-            index = (y == torch.tensor(cl)).nonzero(as_tuple=True)
-            cur_x = x[index]
-            cur_y = y[index]
-            cur_energy = energy[index]
 
-            if self.args.memory_option == "random_sample":
-                self.memory_energy.append(self._random_sample(cur_x, cur_y, cur_energy))
-                
-            elif self.args.memory_option == "min_score":
-                self.memory_energy.append(self._score_based(model, device, cur_x, cur_y, cur_energy, False))
-                
-            elif self.args.memory_option == "max_score":
-                self.memory_energy.append(self._score_based(model, device, cur_x, cur_y, cur_energy, True))
-                
-            elif self.args.memory_option == "low_energy":
-                self.memory_energy.append(self._energy_based(cur_x, cur_y, cur_energy, False))
-                
-            elif self.args.memory_option == "high_energy":
-                self.memory_energy.append(self._energy_based(cur_x, cur_y, cur_energy, True))
-                
-            elif self.args.memory_option == "confused_pred":
-                self.memory_energy.append(self._confused_pred(cur_x, cur_y, cur_energy))
-                
-            elif self.args.memory_option == "bin_based":
-                self.memory_energy.append(self._bin_based(cur_x, cur_y, cur_energy))
-                
-            elif self.args.memory_option == "representation_based":
-                '''
-                Not Implemented yet
-                '''
-                # return self._representation_based()
-                raise NotImplementedError("Not Implemented yet")
-            elif self.args.memory_option == "ensemble":
-                '''
-                Not Implemented yet
-                '''
-                # return self._ensemble()
-                raise NotImplementedError("Not Implemented yet")
-            else:
-                raise NotImplementedError("Not a valid option for coreset selection")
-            self.wasserstein_dist_df[self.classes[cur_class]][self.args.memory_option] = self._calculate_wasserstein_distance(cur_energy, self.memory_energy[cur_class])
-            self.energy_dist_df[self.classes[cur_class]][self.args.memory_option] = self._calulate_energy_distance(cur_energy, self.memory_energy[cur_class])
-    
-    def _get_class_name(self):
-        with open(os.path.join('utils','labels.yml')) as outfile:
-            label_map = yaml.safe_load(outfile)
-        if self.args.dataset == 'cifar10':
-            data_label_map = label_map['CIFAR10_LABELS']
-        elif self.args.dataset == 'tiny_imagenet':
-            data_label_map = label_map['TINYIMAGENET_LABELS']
-        else:
-            raise NotImplementedError('Only Available for Cifar10..... others will be implemented soon.....')
-        cifar_labels = [i for i in range(self.args.num_classes)]
-        return [list(data_label_map.keys())[list(data_label_map.values()).index(l)]\
-                for l in cifar_labels]
+
+class Memory(nn.Module):
+    def __init__(self, args, fix_slot_size=False):
+        super().__init__()
+        self.args = args
+        self.fix_slot_size     = fix_slot_size
+        self.memory_size       = args.memory_size
+        self.memory_batch_size = args.batch_size
         
-    def _random_sample(self, cur_x, cur_y, cur_energy, augmentation=None):
-        memory_energy = torch.empty(0)
-        idx = torch.randperm(len(cur_x))[:self.args.memory_size]
-        memory_x = cur_x[idx]
-        memory_y = cur_y[idx]
-        mem_energy = cur_energy[idx]
-        memory_energy = torch.cat((memory_energy, mem_energy.detach().cpu().view(-1)))
-        memory_dataset = Coreset_Dataset(memory_x, memory_y, transform=augmentation)
-        self.coreset = ConcatDataset([self.coreset, memory_dataset])
-        return memory_energy
+        print(f"Total Size of Buffer : {self.memory_size}")
+        self.flattened_shape  = args.img_size*args.img_size*args.num_channels
+        self.task_id          = 1
+        self.num_cls_per_task = args.num_classes / args.num_tasks
+        self.cur_memory_size  = self.memory_size // (self.num_cls_per_task*self.task_id) # 현재 저장할 class당 memory 크기
+        
+        self.memory_x      = torch.FloatTensor(self.memory_size, self.flattened_shape).fill_(0)
+        self.memory_y      = torch.FloatTensor(self.memory_size).fill_(0)
+        self.memory_energy = torch.FloatTensor(self.memory_size).fill_(0)
+        
+        self.new_x      = [torch.empty(0) for _ in range(self.num_cls_per_task)]
+        self.new_y      = [torch.empty(0) for _ in range(self.num_cls_per_task)]
+        self.new_energy = [torch.empty(0) for _ in range(self.num_cls_per_task)]
+                
+        self.register_buffer('memory_x',      self.memory_x)
+        self.register_buffer('memory_y',      self.memory_y)
+        self.register_buffer('memory_energy', self.memory_energy)
     
-    def _energy_based(self, cur_x, cur_y, cur_energy, energy_mode=True, augmentation=None):
-        '''
-        energy_mode = True if you select coreset by high_energy
-        else False
-        '''
-        memory_energy = torch.empty(0)
-        idx = torch.topk(cur_energy, self.args.memory_size, dim=0, largest=energy_mode)[1]
-        memory_x = cur_x[idx].view((-1, self.args.num_channels, self.args.img_size, self.args.img_size))
-        memory_y = cur_y[idx]
-        memory_dataset = Coreset_Dataset(memory_x, memory_y, transform=augmentation)
-        mem_energy = cur_energy[idx]
-        memory_energy = torch.cat((memory_energy, mem_energy.detach().cpu().view(-1)))
-        self.coreset = ConcatDataset([self.coreset, memory_dataset])
-        return memory_energy
+    @property
+    def x(self):
+        return self.memory_x
     
-    def _calculate_score(self, model, device, cur_x, cur_y):
-        score_tensor = torch.empty(0)
-        for i in range(len(cur_x)):
-            tmp_x = cur_x[i,:,:,:].view((-1, self.args.num_channels, self.args.img_size, self.args.img_size)).to(device)
-            tmp_y = cur_y[i].view(-1).long().to(device)
-            tmp_x.requires_grad = True
-            e = model(tmp_x, tmp_y)[0]
-            e.backward()
-            score = tmp_x.grad
-            sum = torch.abs(torch.mean(score)) + torch.var(score)
-            score_tensor = torch.cat((score_tensor, sum.detach().cpu().view(-1)))
-        return score_tensor
+    @property
+    def y(self):
+        return self.memory_y
     
-    def _score_based(self, model, device, cur_x, cur_y, cur_energy, score_mode=True, augmentation=None):
-        '''
-        score_mode = True if you select coreset by max_score
-        else False
-        '''
-        memory_energy = torch.empty(0)
-        score_tensor = self._calculate_score(self.args, model, device, cur_x, cur_y)
-        idx = torch.topk(score_tensor, self.args.memory_size, dim=0, largest=score_mode)[1]
-        memory_x = cur_x[idx]
-        memory_y = cur_y[idx]
-        mem_energy = cur_energy[idx]
-        memory_energy = torch.cat((memory_energy, mem_energy.detach().cpu().view(-1)))
-        memory_dataset = Coreset_Dataset(memory_x, memory_y, transform=augmentation)
-        self.coreset = ConcatDataset([self.coreset, memory_dataset])
-        return memory_energy
-    
-    def _confused_pred(self, cur_x, cur_y, cur_energy, augmentation=None):
-        memory_energy = torch.empty(0)
-        idx = torch.topk(cur_energy, self.args.memory_size, dim=0, largest=True)[1]
-        memory_x = cur_x[idx].view(self.args.img_size)
-        memory_y = cur_y[idx]
-        mem_energy = cur_energy[idx]
-        memory_energy = torch.cat((memory_energy, mem_energy.detach().cpu().view(-1)))
-        memory_dataset = Coreset_Dataset(memory_x, memory_y, transform=augmentation)
-        self.coreset = ConcatDataset([self.coreset, memory_dataset])
-        return memory_energy
-    
-    def _bin_based(self, cur_x, cur_y, cur_energy, augmentation=None):
-        memory_energy = torch.empty(0)
-        flatten_energy = cur_energy.view(-1) # |C_t|
-        _, bin_idx = torch.sort(flatten_energy)
-        bins = torch.linspace(0, len(bin_idx), self.args.memory_size).long()
-        bins[-1] = bins[-1]-1
-        memory_x = cur_x[bin_idx][bins]
-        memory_y = cur_y[bin_idx][bins]
-        mem_energy = cur_energy[bin_idx][bins]
-        memory_energy = torch.cat((memory_energy, mem_energy.detach().cpu().view(-1)))
-        memory_dataset = Coreset_Dataset(memory_x, memory_y, transform=augmentation)
-        self.coreset = ConcatDataset([self.coreset, memory_dataset])
-        return memory_energy
-    
-    def _representation_based(self):
-        pass
-    
-    def _ensemble(self):
-        pass
-    
-    def _calculate_wasserstein_distance(self, cur_energy, memory_energy):
-        return np.round(wasserstein_distance(cur_energy.cpu().numpy().flatten(), memory_energy.cpu().numpy().flatten()), 5)
-    
-    def _calulate_energy_distance(self, cur_energy, memory_energy):
-        return np.round(energy_distance(cur_energy.cpu().numpy().flatten(), memory_energy.cpu().numpy().flatten()), 5)
-    
-    def get_coreset(self):
-        return self.coreset
-    
-    def get_coreset_energy(self):
+    @property
+    def energy(self):
         return self.memory_energy
     
-    def get_wasserstein_dist_df(self):
-        return self.wasserstein_dist_df
+    def _set_task_id(self, t):
+        self.task_id = t
     
-    def get_energy_dist_df(self):
-        return self.energy_dist_df
-
-    def __len__(self):
-        return len(self.coreset)
+    def _set_cur_memory_size(self):
+        self.cur_memory_size = self.memory_size // (self.num_cls_per_task*self.task_id)
+        
+    def _drop_samples(self):
+        # memory size 업데이트 후 기존 memory에서 일부 sample drop하기 ex. task 1 -> task 2 : (100, 100) -> (50, 50)
+        # memory 버퍼에 bin sampling을 적용  
+        classes_in_memory  = (self.task_id-1) * self.num_cls_per_task
+        former_memory_size = self.memory_size // classes_in_memory
+        for i in range(classes_in_memory):
+            memory_x_before      = self.memory_x[i*former_memory_size      : (i+1)*former_memory_size, :]
+            memory_y_before      = self.memory_y[i*former_memory_size      : (i+1)*former_memory_size, :]
+            memory_energy_before = self.memory_energy[i*former_memory_size : (i+1)*former_memory_size, :]
+            
+            _, bin_idx = torch.sort(memory_energy_before)
+            bins       = torch.linspace(0, len(bin_idx), self.cur_memory_size)
+            bins[-1]   = bins[-1]-1
+            
+            self.memory_x[i*self.cur_memory_size      : (i+1)*self.cur_memory_size, :]      = memory_x_before[bin_idx][bins]
+            self.memory_y[i*self.cur_memory_size      : (i+1)*self.cur_memory_size, :]      = memory_y_before[bin_idx][bins]
+            self.memory_energy[i*self.cur_memory_size : (i+1)*self.cur_memory_size, :]      = memory_energy_before[bin_idx][bins]
     
-@torch.no_grad()
-def accumulate_candidate(loader, device, memory_option, model, task_class_set):
-    memory_x, memory_y = torch.empty(0), torch.empty(0)
-    pbar = tqdm(loader, total=loader.__len__(), position=0, leave=True)
-    for sample in pbar:
-        x, y = sample[0].to(device), sample[1].to(device)
-        joint_targets = get_target(task_class_set, y).to(device).long()
-        y_ans_idx     = get_ans_idx(task_class_set, y).to(device)
-        energy = model(x, joint_targets)
-        if memory_option == 'confused_pred':
-            y_ans_idx = y_ans_idx.detach().cpu()
-            energy_cpu = energy.detach().cpu()
-            true_energy = torch.gather(energy_cpu, dim=1, index=y_ans_idx)
-            other_energy = energy_cpu[: , energy_cpu != true_energy].view(energy_cpu.shape[0], -1) # 검증 필요
-            neg_energy = torch.min(other_energy, dim=1, keepdim=True)[0]
-            memory_energy = torch.cat((memory_energy, true_energy-neg_energy))
-        else:
-            true_energy = energy.gather(dim=1, index=y_ans_idx).detach().cpu()
-            memory_energy = torch.cat((memory_energy, true_energy)) # |bx1|
-        memory_x = torch.cat((memory_x, x.detach().cpu()))
-        memory_y = torch.cat((memory_y, y.detach().cpu()))
-
-    return [memory_x.detach().cpu(), memory_y.detach().cpu(), memory_energy.detach().cpu()]
-
-@torch.no_grad()
-def online_bin_based_sampling(model, memory_size, class_per_tasks, candidates, task_class_set, x, y, device):
-    x = torch.cat((candidates[0].long().to(device), x))
-    y = torch.cat((candidates[1].long().to(device), y))
-    joint_targets = get_target(task_class_set, y).to(device).long()
-    y_ans_idx = get_ans_idx(task_class_set, y)
-    cur_energy = model(x, joint_targets).detach().cpu()
-    cur_energy = cur_energy.gather(dim=1, index=y_ans_idx)
-    flatten_energy = cur_energy.view(-1) # |C_t|
-    _, bin_idx = torch.sort(flatten_energy)
-    bins = torch.linspace(0, len(bin_idx), memory_size).long()
-    bins[-1] = bins[-1]-1
-    memory_x = x[bin_idx][bins]
-    memory_y = y[bin_idx][bins]
-    mem_energy = cur_energy[bin_idx][bins].view(-1)
-    return (memory_x.detach().cpu(), memory_y.detach().cpu()),  mem_energy   
+    def _merge_samples(self):
+        former_classes_in_memory = (self.task_id-2)*self.num_cls_per_task
+        classes_in_memory        = (self.task_id-1) * self.num_cls_per_task
+        former_memory_size       = self.memory_size // classes_in_memory # new_.. 을 제외한 이전까지 저장되어있던 메모리의 크기
+        new_memory_size          = self.new_x[0].size(0)
+        
+        all_new_x      = torch.cat(self.new_x, dim=0)
+        all_new_y      = torch.cat(self.new_y, dim=0)
+        all_new_energy = torch.cat(self.new_energy, dim=0)
+        
+        self.memory_x[former_memory_size*len(former_classes_in_memory):]     = all_new_x
+        self.memory_y[former_memory_size*len(former_classes_in_memory):]     = all_new_y
+        self.memory_energy[former_memory_size*len(former_classes_in_memory)] = all_new_energy
+        
+        # reset candidates
+        self.new_x      = [torch.empty(0) for _ in range(self.num_cls_per_task)]
+        self.new_y      = [torch.empty(0) for _ in range(self.num_cls_per_task)]
+        self.new_energy = [torch.empty(0) for _ in range(self.num_cls_per_task)]
     
-def reservoir_sampling():
-    None
+    def update_memory(self, task_id):
+        # 다음 task 시작 직전에 task_id 갱신
+        # class당 memory 크기 갱신
+        # memory size 업데이트 후 기존 memory에서 일부 sample drop하기 ex. task 1 -> task 2 : (100, 100) -> (50, 50)
+        # 그 다음으로 memory_...와 new_... concat 해줌으로써 memory update 최종 완료
+        self._drop_samples()
+        self._set_task_id(task_id)
+        self._set_cur_memory_size()
+        self._merge_samples()
+      
+    def add_sample_online(self, x, y, energy, cur_cls_idx):
+        # 매 iteration마다 수행
+        '''
+        Online Bin-Based Sampling with non-fixed memory slot
+        
+        cur_cls_idx : cls idx of current task class set.  ex) if num_cls_per_task = 2, then cur_cls_idx is 0 or 1
+        x           : x with cur_cls_idx.
+        y           : y with cur_cls_idx.
+        '''
+        
+        x = x.view(-1, self.flattened_shape)
+        # 남은 slot 크기보다 현재 batch 크기가 더 작다면
+        # 그대로 concat
+        self.new_x[cur_cls_idx]      = torch.cat((self.new_x[cur_cls_idx], x), dim=0)
+        self.new_y[cur_cls_idx]      = torch.cat((self.new_y[cur_cls_idx], y), dim=0)
+        self.new_energy[cur_cls_idx] = torch.cat((self.new_energy[cur_cls_idx], energy.view(-1)), dim=0)
+        
+        if self.new_x.size(0) > self.cur_memory_size - self.new_x[cur_cls_idx].size(0): 
+            # 남은 slot 크기보다 현재 batch 크기가 더 크다면
+            # -> bin sampling
+            _, bin_idx = torch.sort(self.new_energy[cur_cls_idx])
+            bins       = torch.linspace(0, len(bin_idx), self.cur_memory_size).long()
+            bins[-1]   = bins[-1]-1
+            
+            self.new_x[cur_cls_idx]      = self.new_x[cur_cls_idx][bin_idx][bins]
+            self.new_y[cur_cls_idx]      = self.new_y[cur_cls_idx][bin_idx][bins]
+            self.new_energy[cur_cls_idx] = self.new_energy[cur_cls_idx][bin_idx][bins]
+            
+    def _bin_based_sampling_offline(self, cur_cls):
+        cur_energy = self.new_energy[cur_cls]
+        _, bin_idx = torch.sort(cur_energy)
+        bins       = torch.linspace(0, len(bin_idx), self.cur_memory_size)
+        bins[-1]   = bins[-1]-1
+        
+        temp_memory_x      = self.new_x[cur_cls][bin_idx][bins]
+        temp_memory_y      = self.new_y[cur_cls][bin_idx][bins]
+        temp_memory_energy = self.new_energy[cur_cls][bin_idx][bins]
+        
+        self.memory_x[cur_cls*self.cur_memory_size :      (cur_cls+1)*self.cur_memory_size, :]      = temp_memory_x
+        self.memory_y[cur_cls*self.cur_memory_size :      (cur_cls+1)*self.cur_memory_size, :]      = temp_memory_y
+        self.memory_energy[cur_cls*self.cur_memory_size : (cur_cls+1)*self.cur_memory_size, :]      = temp_memory_energy
+        
+    @torch.no_grad()
+    def add_sample_offline(self, loader, task_class_set, model, device):
+        '''
+        Calculate Energies and add 
+        '''
+        cur_task_classes = sorted(list(task_class_set)[-1*self.num_cls_per_task:])
+        temp_memory_x      = torch.empty(0)
+        temp_memory_y      = torch.empty(0)
+        temp_memory_energy = torch.empty(0)
+        pbar = tqdm(loader, total=loader.__len__(), position=0, leave=True, desc="Calculating Energies of Task data")
+        for sample in pbar:
+            x, y          = sample[0].to(device), sample[1].to(device)
+            joint_targets = get_target(task_class_set, y).to(device).long()
+            y_ans_idx     = get_ans_idx(task_class_set, y).to(device)
+            energy        = model(x, joint_targets)
+            true_energy   = energy.gather(dim=1, index=y_ans_idx)
+            
+            temp_memory_x      = torch.cat((temp_memory_x, x.detach().cpu()))
+            temp_memory_y      = torch.cat((temp_memory_y, y.detach().cpu()))
+            temp_memory_energy = torch.cat((temp_memory_energy, true_energy.detach().cpu()))
+        
+        for cur_cls_idx, cl in enumerate(cur_task_classes):
+            index                        = (temp_memory_y == torch.tensor(cl)).nonzero(as_tuple=True)
+            self.new_x[cur_cls_idx]      = temp_memory_x[index].view(-1, self.flattened_shape)
+            self.new_y[cur_cls_idx]      = temp_memory_y[index]
+            self.new_energy[cur_cls_idx] = temp_memory_energy[index]
+        
+        for cur_cls in cur_task_classes:
+            self._bin_based_sampling_offline(cur_cls)
     
-    
-def add_online_coreset():
-    pass
+    def sample(self):
+        indices = torch.from_numpy(np.random.choice(self.memory_x.size(0), self.memory_batch_size, replace=False))
+        return (self.memory_x[indices].view(len(indices), self.args.num_channles, self.args.img_size, self.args.img_size), self.memory_y[indices])
