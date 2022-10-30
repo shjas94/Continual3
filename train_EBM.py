@@ -1,6 +1,7 @@
 import argparse
 import os
 import torch
+from torch.utils.data import DataLoader, RandomSampler
 import numpy as np
 from tqdm import tqdm
 import wandb
@@ -69,8 +70,9 @@ def trainer(args,
             memory.update_memory(task_num+1)
         elif args.use_memory and e+1 == args.epoch and task_num == 1:
             # task_num이 1인 경우     -> training 후 task_id와 저장할 memory 크기만 바꿔주면 되는 경우
-            memory.set_task_id_and_memory_size(task_num+1)
-            
+            memory.set_task_id(task_num+1)
+            memory.merge_samples()
+            memory.set_cur_memory_size()
     # final_energies = calculate_final_energy(model=model, 
     #                                         device=device, 
     #                                         loader=train_loader, 
@@ -93,6 +95,13 @@ def train_one_epoch(args,
     pbar = tqdm(loader, total=loader.__len__(), position=0, leave=True)
     train_loss_list = []
     train_answers, cur_answers, mem_answers, total_len, cur_len, mem_len = 0, 0, 0, 0, 0, 0
+    if args.use_memory and task_num != 1:
+        memory_sampler = RandomSampler(data_source=memory.sample(), 
+                                       replacement=False)
+        memory_loader = DataLoader(dataset=memory.sample(),
+                                   sampler=memory_sampler,
+                                   batch_size=args.batch_size,
+                                   drop_last=False)
     for it, sample in enumerate(pbar):
         optimizer.zero_grad()
         if args.dataset == "splitted_mnist" or args.dataset == "cifar10" or args.dataset == "cifar100" or args.dataset == "tiny_imagenet":
@@ -111,7 +120,7 @@ def train_one_epoch(args,
         y_ans_idx     = get_ans_idx(task_class_set, y).to(device)
         total_len    += x.size(0)
         if args.use_memory and task_num > 1:
-            mem_sample        = memory.sample()
+            mem_sample        = next(iter(memory_loader))
             mem_x             = mem_sample[0].to(device)
             mem_y             = mem_sample[1].to(device)
             mem_joint_targets = get_target(task_class_set, mem_y).to(device) 
@@ -160,7 +169,7 @@ def train_one_epoch(args,
                                      device=device,
                                      class_per_task=args.num_classes//args.num_tasks,
                                      coreset_mode=True)
-                loss = cur_loss + mem_loss
+                loss = cur_loss + (args.lam*task_num)*mem_loss
             else:
                 loss = criterion(energy=energy,
                                  y_ans_idx=y_ans_idx,
@@ -188,11 +197,13 @@ def train_one_epoch(args,
         # To Do
         if args.use_memory and args.learning_mode == 'online':
             for i in range(args.num_classes // args.num_tasks): 
-                cl    = torch.tensor(list(task_class_set)[-1*(args.num_classes // args.num_tasks):])[i] 
-                idx   = (y == cl).nonzero(as_tuple=True) 
-                x_cur = x[idx]
-                y_cur = y[idx]
-                memory.add_sample_online(x_cur, y_cur, i)
+                cl         = torch.tensor(list(task_class_set)[-1*(args.num_classes // args.num_tasks):])[i] 
+                idx        = (y == cl).nonzero(as_tuple=True) 
+                x_cur      = x[idx].detach().cpu()
+                y_cur      = y[idx].detach().cpu()
+                energy_cur = energy.gather(dim=1, index=y_ans_idx)
+                energy_cur = energy_cur[idx].detach().cpu()
+                memory.add_sample_online(x_cur, y_cur, energy_cur, i)
 
     total_class_set = total_class_set.union(task_class_set)
     return total_class_set, train_answers / total_len, train_loss_list, memory
@@ -232,10 +243,10 @@ def test_total(args,
         torch.save(confused_energy, os.path.join('asset', 'confused_energy', f"Task_{task_num}_{i+1}th_test_confused_energy.pt"))
         torch.save(ys, os.path.join('asset', 'ys', f"Task_{task_num}_{i+1}th_test_ys.pt"))
         torch.save(confused_class, os.path.join('asset', 'confused_class', f"Task_{task_num}_{i+1}th_test_confused_class.pt")) 
-    if args.wandb:
-        if task_infos.__len__('task_acc') < args.num_tasks:
-            for _ in range(args.num_tasks-task_infos.__len__('task_acc')):
-                task_infos.add_infos(0, 'task_acc')
+    
+    if task_infos.__len__('task_acc') < args.num_tasks:
+        for _ in range(args.num_tasks-task_infos.__len__('task_acc')):
+            task_infos.add_infos(0, 'task_acc')
     return task_infos
 
 @torch.no_grad()
@@ -395,9 +406,9 @@ def main(args):
                 f"Task {i+1} Test Accuracy" : task_acc[i]
                 })
     ##### 임시 구현 #####
-    os.mkdir('asset/after_train_energies')
-    for i in range(len(after_train_energies)):
-        torch.save(after_train_energies[i], f"asset/Class_{i}_after_train_energies.pt")    
+    # os.mkdir('asset/after_train_energies')
+    # for i in range(len(after_train_energies)):
+    #     torch.save(after_train_energies[i], f"asset/Class_{i}_after_train_energies.pt")    
     ####################            
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -428,7 +439,7 @@ if __name__ == "__main__":
     parser.add_argument('--lam', type=float, default=1.0, help='term for balancing current loss and memory loss')
     parser.add_argument('--num_channels', type=int, default=3)
     parser.add_argument('--memory_size', type=int, default=20)
-    parser.add_argument('--save_confusion_fig', default=False, action='store_true')
+    parser.add_argument('--save_confusion_fig', default=True, action='store_true')
     parser.add_argument('--save_matrices', default=False, action='store_true')
     parser.add_argument('--save_gt_fig', default=False, action='store_true')
     parser.add_argument('--save_pred_tsne_fig', default=False, action='store_true')

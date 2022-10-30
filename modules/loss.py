@@ -21,9 +21,10 @@ def _calculate_energy_negative(energy, y_ans_idx, device, class_per_task, corese
     counter = 0
     while counter < total_class_len:
         if coreset_mode:
-            temp_idx = torch.randint(0, energy.size(1) - class_per_task, (1, 1)).to(device)
+            # energy.size(1) - class_per_task
+            temp_idx = torch.randint(0, energy.size(1), (1, 1)).to(device)
         else:           
-            temp_idx = torch.randint(energy.size(1) - class_per_task, energy.size(1), (1, 1)).to(device)
+            temp_idx = torch.randint(0, energy.size(1), (1, 1)).to(device)
         if temp_idx == y_ans_idx[counter]:
             continue
         else:

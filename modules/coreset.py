@@ -20,21 +20,17 @@ class Memory(nn.Module):
         print(f"Total Size of Buffer : {self.memory_size}")
         self.flattened_shape  = args.img_size*args.img_size*args.num_channels
         self.task_id          = 1 # 현재 training 중인 task (task 시작 전 update)
-        self.num_cls_per_task = args.num_classes / args.num_tasks
+        self.num_cls_per_task = args.num_classes // args.num_tasks
         self.cur_memory_size  = self.memory_size // (self.num_cls_per_task*self.task_id) # 현재 저장할 class당 memory 크기
         
         self.memory_x      = torch.FloatTensor(self.memory_size, self.flattened_shape).fill_(0)
-        self.memory_y      = torch.FloatTensor(self.memory_size).fill_(0)
+        self.memory_y      = torch.LongTensor(self.memory_size).fill_(0)
         self.memory_energy = torch.FloatTensor(self.memory_size).fill_(0)
         
         self.new_x      = [torch.empty(0) for _ in range(self.num_cls_per_task)]
         self.new_y      = [torch.empty(0) for _ in range(self.num_cls_per_task)]
         self.new_energy = [torch.empty(0) for _ in range(self.num_cls_per_task)]
                 
-        self.register_buffer('memory_x',      self.memory_x)
-        self.register_buffer('memory_y',      self.memory_y)
-        self.register_buffer('memory_energy', self.memory_energy)
-    
     @property
     def x(self):
         return self.memory_x
@@ -47,57 +43,76 @@ class Memory(nn.Module):
     def energy(self):
         return self.memory_energy
     
-    def set_task_id_and_memory_size(self, t):
+    def sample(self):
+        return Coreset_Dataset(self.memory_x.view(-1, self.args.num_channels, self.args.img_size, self.args.img_size), self.memory_y)
+    def set_task_id(self, t):
         self.task_id = t
-        self._set_cur_memory_size()
         
-    def _set_cur_memory_size(self):
+    def set_cur_memory_size(self):
         self.cur_memory_size = self.memory_size // (self.num_cls_per_task*self.task_id)
         
     def _drop_samples(self):
         # memory size 업데이트 후 기존 memory에서 일부 sample drop하기 ex. task 1 -> task 2 : (100, 100) -> (50, 50)
         # memory 버퍼에 bin sampling을 적용  
-        classes_in_memory  = (self.task_id-1) * self.num_cls_per_task
+        classes_in_memory  = (self.task_id-2) * self.num_cls_per_task
         former_memory_size = self.memory_size // classes_in_memory
+        cur_memory_size    = self.memory_size // ((self.task_id-1)*self.num_cls_per_task)
         for i in range(classes_in_memory):
-            memory_x_before      = self.memory_x[i*former_memory_size      : (i+1)*former_memory_size, :]
-            memory_y_before      = self.memory_y[i*former_memory_size      : (i+1)*former_memory_size, :]
-            memory_energy_before = self.memory_energy[i*former_memory_size : (i+1)*former_memory_size, :]
+            memory_x_before      = self.memory_x[i*former_memory_size      : (i+1)*former_memory_size]
+            memory_y_before      = self.memory_y[i*former_memory_size      : (i+1)*former_memory_size]
+            memory_energy_before = self.memory_energy[i*former_memory_size : (i+1)*former_memory_size]
             
             _, bin_idx = torch.sort(memory_energy_before)
-            bins       = torch.linspace(0, len(bin_idx), self.cur_memory_size)
-            bins[-1]   = bins[-1]-1
+            bins       = torch.linspace(0, len(bin_idx), cur_memory_size).long()
             
-            self.memory_x[i*self.cur_memory_size      : (i+1)*self.cur_memory_size, :]      = memory_x_before[bin_idx][bins]
-            self.memory_y[i*self.cur_memory_size      : (i+1)*self.cur_memory_size, :]      = memory_y_before[bin_idx][bins]
-            self.memory_energy[i*self.cur_memory_size : (i+1)*self.cur_memory_size, :]      = memory_energy_before[bin_idx][bins]
+            bins[-1]   = bins[-1]-1
+            self.memory_x[i*cur_memory_size      : (i+1)*cur_memory_size]      = memory_x_before[bin_idx][bins]
+            self.memory_y[i*cur_memory_size      : (i+1)*cur_memory_size]      = memory_y_before[bin_idx][bins]
+            self.memory_energy[i*cur_memory_size : (i+1)*cur_memory_size]      = memory_energy_before[bin_idx][bins]
     
-    def _merge_samples(self):
-        former_classes_in_memory = (self.task_id-2) * self.num_cls_per_task
-        classes_in_memory        = (self.task_id-1) * self.num_cls_per_task # 새롭게 sampling한 것들까지 포함
-        former_memory_size       = self.memory_size // classes_in_memory # drop 이후 new_.. 을 제외한 이전까지 저장되어있던 메모리의 크기
-        
-        all_new_x      = torch.cat(self.new_x, dim=0)
-        all_new_y      = torch.cat(self.new_y, dim=0)
-        all_new_energy = torch.cat(self.new_energy, dim=0)
-        
-        self.memory_x[former_memory_size*len(former_classes_in_memory):]     = all_new_x
-        self.memory_y[former_memory_size*len(former_classes_in_memory):]     = all_new_y
-        self.memory_energy[former_memory_size*len(former_classes_in_memory)] = all_new_energy
-        
-        # reset candidates
-        self.new_x      = [torch.empty(0) for _ in range(self.num_cls_per_task)]
-        self.new_y      = [torch.empty(0) for _ in range(self.num_cls_per_task)]
-        self.new_energy = [torch.empty(0) for _ in range(self.num_cls_per_task)]
-    # To Do 검토 필요
+    def merge_samples(self):
+        if self.task_id > 2:
+            former_classes_in_memory = (self.task_id-2) * self.num_cls_per_task # 4
+            classes_in_memory        = (self.task_id-1) * self.num_cls_per_task # 새롭게 sampling한 것들까지 포함 6
+            former_memory_size       = self.memory_size // classes_in_memory # drop 이후 new_.. 을 제외한 이전까지 저장되어있던 메모리의 크기
+            
+            all_new_x      = torch.cat(self.new_x, dim=0)
+            all_new_y      = torch.cat(self.new_y, dim=0)
+            all_new_energy = torch.cat(self.new_energy, dim=0)
+            
+            self.memory_x[former_memory_size*former_classes_in_memory:former_memory_size*classes_in_memory]      = all_new_x
+            self.memory_y[former_memory_size*former_classes_in_memory:former_memory_size*classes_in_memory]      = all_new_y
+            self.memory_energy[former_memory_size*former_classes_in_memory:former_memory_size*classes_in_memory] = all_new_energy
+            
+            # reset candidates
+            self.new_x      = [torch.empty(0) for _ in range(self.num_cls_per_task)]
+            self.new_y      = [torch.empty(0) for _ in range(self.num_cls_per_task)]
+            self.new_energy = [torch.empty(0) for _ in range(self.num_cls_per_task)]
+        else:
+            all_new_x      = torch.cat(self.new_x, dim=0)
+            all_new_y      = torch.cat(self.new_y, dim=0)
+            all_new_energy = torch.cat(self.new_energy, dim=0)
+
+            self.memory_x[:]      = all_new_x
+            self.memory_y[:]      = all_new_y
+            self.memory_energy[:] = all_new_energy
+            
+            # reset candidates
+            self.new_x      = [torch.empty(0) for _ in range(self.num_cls_per_task)]
+            self.new_y      = [torch.empty(0) for _ in range(self.num_cls_per_task)]
+            self.new_energy = [torch.empty(0) for _ in range(self.num_cls_per_task)]
+        torch.save(self.memory_x, f"memory_x_{self.task_id}.pt")
+        torch.save(self.memory_y, f"memory_y_{self.task_id}.pt")
     def update_memory(self, task_id):
         # 다음 task 시작 직전에 task_id 갱신
         # class당 memory 크기 갱신
         # memory size 업데이트 후 기존 memory에서 일부 sample drop하기 ex. task 1 -> task 2 : (100, 100) -> (50, 50)
         # 그 다음으로 memory_...와 new_... concat 해줌으로써 memory update 최종 완료
+        
+        self.set_task_id(task_id)
+        self.set_cur_memory_size()
         self._drop_samples()
-        self.set_task_id_and_memory_size(task_id)
-        self._merge_samples()
+        self.merge_samples()
       
     def add_sample_online(self, x, y, energy, cur_cls_idx):
         # 매 iteration마다 수행
@@ -115,14 +130,13 @@ class Memory(nn.Module):
         self.new_x[cur_cls_idx]      = torch.cat((self.new_x[cur_cls_idx], x), dim=0)
         self.new_y[cur_cls_idx]      = torch.cat((self.new_y[cur_cls_idx], y), dim=0)
         self.new_energy[cur_cls_idx] = torch.cat((self.new_energy[cur_cls_idx], energy.view(-1)), dim=0)
-        
         if self.new_x[cur_cls_idx].size(0) > self.cur_memory_size: 
+            
             # 현재 저장된 memory의 크기가 class당 최대 메모리 크기보다 크다면
             # -> bin sampling
             _, bin_idx = torch.sort(self.new_energy[cur_cls_idx])
             bins       = torch.linspace(0, len(bin_idx), self.cur_memory_size).long()
             bins[-1]   = bins[-1]-1
-            
             self.new_x[cur_cls_idx]      = self.new_x[cur_cls_idx][bin_idx][bins]
             self.new_y[cur_cls_idx]      = self.new_y[cur_cls_idx][bin_idx][bins]
             self.new_energy[cur_cls_idx] = self.new_energy[cur_cls_idx][bin_idx][bins]
@@ -150,7 +164,7 @@ class Memory(nn.Module):
         temp_memory_x      = torch.empty(0)
         temp_memory_y      = torch.empty(0)
         temp_memory_energy = torch.empty(0)
-        pbar = tqdm(loader, total=loader.__len__(), position=0, leave=True, desc="Calculating Energies of Task data")
+        pbar = tqdm(loader, total=loader.__len__(), position=0, leave=True, desc="Calculating Energies of Task data", colour='red')
         for sample in pbar:
             x, y          = sample[0].to(device), sample[1].to(device)
             joint_targets = get_target(task_class_set, y).to(device).long()
@@ -171,6 +185,6 @@ class Memory(nn.Module):
         for cur_cls in cur_task_classes:
             self._bin_based_sampling_offline(cur_cls)
     
-    def sample(self):
-        indices = torch.from_numpy(np.random.choice(self.memory_x.size(0), self.memory_batch_size, replace=False))
-        return (self.memory_x[indices].view(len(indices), self.args.num_channles, self.args.img_size, self.args.img_size), self.memory_y[indices])
+    # def sample(self):
+    #     indices = torch.from_numpy(np.random.choice(self.memory_x.size(0), self.memory_batch_size, replace=False))
+    #     return (self.memory_x[indices].view(len(indices), self.args.num_channels, self.args.img_size, self.args.img_size), self.memory_y[indices])
