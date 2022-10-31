@@ -146,23 +146,23 @@ class Memory(nn.Module):
     def _bin_based_sampling_offline(self, cur_cls):
         cur_energy = self.new_energy[cur_cls]
         _, bin_idx = torch.sort(cur_energy)
-        bins       = torch.linspace(0, len(bin_idx), self.cur_memory_size)
+        bins       = torch.linspace(0, len(bin_idx), self.cur_memory_size).long()
         bins[-1]   = bins[-1]-1
         
-        temp_memory_x      = self.new_x[cur_cls][bin_idx][bins]
-        temp_memory_y      = self.new_y[cur_cls][bin_idx][bins]
-        temp_memory_energy = self.new_energy[cur_cls][bin_idx][bins]
+        self.new_x[cur_cls]      = self.new_x[cur_cls][bin_idx][bins]
+        self.new_y[cur_cls]      = self.new_y[cur_cls][bin_idx][bins]
+        self.new_energy[cur_cls] = self.new_energy[cur_cls][bin_idx][bins]
         
-        self.memory_x[cur_cls*self.cur_memory_size :      (cur_cls+1)*self.cur_memory_size, :]      = temp_memory_x
-        self.memory_y[cur_cls*self.cur_memory_size :      (cur_cls+1)*self.cur_memory_size, :]      = temp_memory_y
-        self.memory_energy[cur_cls*self.cur_memory_size : (cur_cls+1)*self.cur_memory_size, :]      = temp_memory_energy
+        # self.memory_x[cur_cls*self.cur_memory_size :      (cur_cls+1)*self.cur_memory_size]      = temp_memory_x
+        # self.memory_y[cur_cls*self.cur_memory_size :      (cur_cls+1)*self.cur_memory_size]      = temp_memory_y
+        # self.memory_energy[cur_cls*self.cur_memory_size : (cur_cls+1)*self.cur_memory_size]      = temp_memory_energy
         
     @torch.no_grad()
     def add_sample_offline(self, loader, task_class_set, model, device):
         '''
         Calculate Energies
         '''
-        cur_task_classes = sorted(list(task_class_set)[-1*self.num_cls_per_task:])
+        cur_task_classes   = sorted(list(task_class_set)[-1*self.num_cls_per_task:])
         temp_memory_x      = torch.empty(0)
         temp_memory_y      = torch.empty(0)
         temp_memory_energy = torch.empty(0)
@@ -178,15 +178,16 @@ class Memory(nn.Module):
             temp_memory_x      = torch.cat((temp_memory_x, x.detach().cpu()))
             temp_memory_y      = torch.cat((temp_memory_y, y.detach().cpu()))
             temp_memory_energy = torch.cat((temp_memory_energy, true_energy.detach().cpu().view(-1)))
-        
-        for cur_cls_idx, cl in enumerate(cur_task_classes):
-            index                        = (temp_memory_y == torch.tensor(cl)).nonzero(as_tuple=True)
-            self.new_x[cur_cls_idx]      = temp_memory_x[index].view(-1, self.flattened_shape)
-            self.new_y[cur_cls_idx]      = temp_memory_y[index]
-            self.new_energy[cur_cls_idx] = temp_memory_energy[index]
-        
-        for cur_cls in cur_task_classes:
-            self._bin_based_sampling_offline(cur_cls)
+        # print(temp_memory_x.shape)
+        # print(temp_memory_y.shape)
+        # print(temp_memory_energy.shape)
+        for cur_cls_idx, cl in enumerate(cur_task_classes):        
+            index                        = (temp_memory_y == cl).nonzero(as_tuple=True)
+            self.new_x[cur_cls_idx]      = torch.cat((self.new_x[cur_cls_idx], temp_memory_x[index].view(-1, self.flattened_shape)), dim=0)
+            self.new_y[cur_cls_idx]      = torch.cat((self.new_y[cur_cls_idx], temp_memory_y[index]), dim=0)
+            self.new_energy[cur_cls_idx] = torch.cat((self.new_energy[cur_cls_idx], temp_memory_energy[index]), dim=0)
+        # for cur_cls_idx, cl in enumerate(cur_task_classes):
+            self._bin_based_sampling_offline(cur_cls_idx)
     
     # def sample(self):
     #     indices = torch.from_numpy(np.random.choice(self.memory_x.size(0), self.memory_batch_size, replace=False))

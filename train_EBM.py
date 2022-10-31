@@ -92,13 +92,14 @@ def train_one_epoch(args,
                     task_num,
                     logger=None,
                     memory=None):
-    pbar = tqdm(loader, total=loader.__len__(), position=0, leave=True)
+    pbar = tqdm(loader, total=loader.__len__(), position=0, leave=True, colour='cyan')
     train_loss_list = []
     train_answers, cur_answers, mem_answers, total_len, cur_len, mem_len = 0, 0, 0, 0, 0, 0
     if args.use_memory and task_num != 1:
-        memory_sampler = RandomSampler(data_source=memory.sample(), 
+        memory_data = memory.sample()
+        memory_sampler = RandomSampler(data_source=memory_data, 
                                        replacement=False)
-        memory_loader = DataLoader(dataset=memory.sample(),
+        memory_loader = DataLoader(dataset=memory_data,
                                    sampler=memory_sampler,
                                    batch_size=args.batch_size,
                                    drop_last=False)
@@ -258,7 +259,7 @@ def test_by_task(args,
                  task_num,
                  logger=None):
     model.eval()
-    pbar = tqdm(loader, total=loader.__len__(), position=0, leave=True)
+    pbar = tqdm(loader, total=loader.__len__(), position=0, leave=True, colour='magenta')
     class_set = torch.tensor(list(total_class_set))
     pred_classes, ys = None, None
     reps, pred_reps = torch.empty(0), torch.empty(0)
@@ -447,7 +448,7 @@ if __name__ == "__main__":
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--checkpoint_path', type=str, default='./checkpoint')
     parser.add_argument('--checkpoint', type=str, default='')
-    parser.add_argument('--wandb', default=True, action='store_true')
+    parser.add_argument('--wandb', default=False, action='store_true')
     parser.add_argument('--run_name', type=str, default='')
     args = parser.parse_args()
     main(args)
