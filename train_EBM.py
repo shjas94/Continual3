@@ -169,7 +169,7 @@ def train_one_epoch(args,
                                      device=device,
                                      class_per_task=args.num_classes//args.num_tasks,
                                      coreset_mode=True)
-                loss = cur_loss + (args.lam*task_num)*mem_loss
+                loss = cur_loss + args.lam*mem_loss
             else:
                 loss = criterion(energy=energy,
                                  y_ans_idx=y_ans_idx,

@@ -45,6 +45,7 @@ class Memory(nn.Module):
     
     def sample(self):
         return Coreset_Dataset(self.memory_x.view(-1, self.args.num_channels, self.args.img_size, self.args.img_size), self.memory_y)
+    
     def set_task_id(self, t):
         self.task_id = t
         
