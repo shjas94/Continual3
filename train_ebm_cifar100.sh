@@ -1,0 +1,3 @@
+python train_EBM.py --dataset='cifar100' --num_classes=100 --num_tasks=5 --batch_size=32 --test_batch_size=32 \
+--model='resnet_18' --norm='continualnorm' --optimizer='adam' --lr=5e-04 --criterion='contrastive_divergence' --weight_decay=0.0 --epoch=1 --memory_option='bin_based' \
+--img_size=32 --memory_size=200 --learning_mode='online' --run_name='contrastive_divergence_memory_200_lr_5e-04_lam_2.0_wo_scheduling(SOTA seed 6)' --lam=2.0 --seed=6

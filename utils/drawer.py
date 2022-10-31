@@ -23,6 +23,8 @@ def draw_confusion(root, pred, y, task_num, dataset="oxford_pet"):
         dataset_label = label_map['OXFORD_LABELS']
     elif dataset == "cifar10":
         dataset_label = label_map['CIFAR10_LABELS']
+    elif dataset == "cifar100":
+        dataset_label = label_map['CIFAR100_LABELS']
     elif dataset == "tiny_imagenet":
         dataset_label = label_map['TINYIMAGENET_LABELS']
         

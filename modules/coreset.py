@@ -102,8 +102,8 @@ class Memory(nn.Module):
             self.new_x      = [torch.empty(0) for _ in range(self.num_cls_per_task)]
             self.new_y      = [torch.empty(0) for _ in range(self.num_cls_per_task)]
             self.new_energy = [torch.empty(0) for _ in range(self.num_cls_per_task)]
-        torch.save(self.memory_x, f"memory_x_{self.task_id}.pt")
-        torch.save(self.memory_y, f"memory_y_{self.task_id}.pt")
+        # torch.save(self.memory_x, f"memory_x_{self.task_id}.pt")
+        # torch.save(self.memory_y, f"memory_y_{self.task_id}.pt")
     def update_memory(self, task_id):
         # 다음 task 시작 직전에 task_id 갱신
         # class당 memory 크기 갱신
@@ -131,6 +131,7 @@ class Memory(nn.Module):
         self.new_x[cur_cls_idx]      = torch.cat((self.new_x[cur_cls_idx], x), dim=0)
         self.new_y[cur_cls_idx]      = torch.cat((self.new_y[cur_cls_idx], y), dim=0)
         self.new_energy[cur_cls_idx] = torch.cat((self.new_energy[cur_cls_idx], energy.view(-1)), dim=0)
+        
         if self.new_x[cur_cls_idx].size(0) > self.cur_memory_size: 
             
             # 현재 저장된 memory의 크기가 class당 최대 메모리 크기보다 크다면
@@ -166,6 +167,7 @@ class Memory(nn.Module):
         temp_memory_y      = torch.empty(0)
         temp_memory_energy = torch.empty(0)
         pbar = tqdm(loader, total=loader.__len__(), position=0, leave=True, desc="Calculating Energies of Task data", colour='red')
+        
         for sample in pbar:
             x, y          = sample[0].to(device), sample[1].to(device)
             joint_targets = get_target(task_class_set, y).to(device).long()
