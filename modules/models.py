@@ -119,9 +119,9 @@ class ResNet(nn.Module):
         # z = self.fc1(z)
         z = z[:,None,:].expand_as(y_z)
         z = z * y_z
-        # rep = z
+        rep = z
         # z = self.fc2(z)
-        return self.fc3(z).view(bs, -1)
+        return self.fc3(z).view(bs, -1), rep
 
 class EBM_Beginning(nn.Module):
     def __init__(self, args):

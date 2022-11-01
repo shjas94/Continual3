@@ -73,6 +73,16 @@ def trainer(args,
             memory.set_task_id(task_num+1)
             memory.merge_samples()
             memory.set_cur_memory_size()
+        
+        if task_num == args.num_tasks:
+            final_memory_x      = memory.x
+            final_memory_y      = memory.y
+            final_memory_energy = memory.energy
+            final_memory_rep    = memory.rep
+            torch.save(final_memory_x, 'asset/final_memory/final_memory_x.pt')
+            torch.save(final_memory_y, 'asset/final_memory/final_memory_y.pt')
+            torch.save(final_memory_energy, 'asset/final_memory/final_memory_energy.pt')
+            torch.save(final_memory_energy, 'asset/final_memory/final_memory_rep.pt')
     # final_energies = calculate_final_energy(model=model, 
     #                                         device=device, 
     #                                         loader=train_loader, 
@@ -134,7 +144,7 @@ def train_one_epoch(args,
             y_ans_idx     = torch.cat((y_ans_idx, mem_y_ans_idx), dim=0)
             total_len    += mem_x.size(0)
             
-        energy = model(x, joint_targets)
+        energy, rep = model(x, joint_targets)
         if args.criterion == 'nll_energy':
             if args.use_memory and task_num > 1:
                 cur_energies, mem_energies = energy[:cur_data_size, :], energy[cur_data_size:, :]
@@ -199,7 +209,7 @@ def train_one_epoch(args,
         if args.use_memory and args.learning_mode == 'online':
             for i in range(args.num_classes // args.num_tasks): 
                 cl         = torch.tensor(list(task_class_set)[-1*(args.num_classes // args.num_tasks):])[i] 
-                idx        = (y == cl).nonzero(as_tuple=True) 
+                idx        = (y == cl).nonzero(as_tuple=True)[0] 
                 x_cur      = x[idx].detach().cpu()
                 y_cur      = y[idx].detach().cpu()
                 energy_cur = energy.gather(dim=1, index=y_ans_idx)
@@ -280,12 +290,12 @@ def test_by_task(args,
             y = sample[1]+(10*(task_num))
             y = y.to(device)
         
-        joint_targets           = get_target(total_class_set, y).to(device)
-        energy                  = model(x, joint_targets)
-        y                       = y.detach().cpu()
-        energy                  = energy.detach().cpu() 
-        pred_energy, pred_index = torch.min(energy, dim=1) # lowest energy among classes, prediction
-        pred_class              = class_set[pred_index] 
+        joint_targets                = get_target(total_class_set, y).to(device)
+        energy, rep                  = model(x, joint_targets)
+        y                            = y.detach().cpu()
+        energy                       = energy.detach().cpu() 
+        pred_energy, pred_index      = torch.min(energy, dim=1) # lowest energy among classes, prediction
+        pred_class                   = class_set[pred_index] 
         
         answer_energy                 = torch.cat((answer_energy, torch.gather(energy.clone(), 1, y.reshape(-1,1))), dim=0)
         temp_energy                   = energy.clone()

@@ -26,11 +26,12 @@ class Memory(nn.Module):
         self.memory_x      = torch.FloatTensor(self.memory_size, self.flattened_shape).fill_(0)
         self.memory_y      = torch.LongTensor(self.memory_size).fill_(0)
         self.memory_energy = torch.FloatTensor(self.memory_size).fill_(0)
+        self.memory_rep    = torch.FloatTensor(self.memory_size).fill_(0)
         
         self.new_x      = [torch.empty(0) for _ in range(self.num_cls_per_task)]
         self.new_y      = [torch.empty(0) for _ in range(self.num_cls_per_task)]
         self.new_energy = [torch.empty(0) for _ in range(self.num_cls_per_task)]
-                
+        self.new_rep    = [torch.empty(0) for _ in range(self.num_cls_per_task)]
     @property
     def x(self):
         return self.memory_x
@@ -42,6 +43,10 @@ class Memory(nn.Module):
     @property
     def energy(self):
         return self.memory_energy
+    
+    @property
+    def rep(self):
+        return self.memory_rep
     
     def sample(self):
         return Coreset_Dataset(self.memory_x.view(-1, self.args.num_channels, self.args.img_size, self.args.img_size), self.memory_y)
@@ -62,7 +67,7 @@ class Memory(nn.Module):
             memory_x_before      = self.memory_x[i*former_memory_size      : (i+1)*former_memory_size]
             memory_y_before      = self.memory_y[i*former_memory_size      : (i+1)*former_memory_size]
             memory_energy_before = self.memory_energy[i*former_memory_size : (i+1)*former_memory_size]
-            
+            memory_rep_before    = self.memory_rep[i*former_memory_size    : (i+1)*former_memory_size]
             _, bin_idx = torch.sort(memory_energy_before)
             bins       = torch.linspace(0, len(bin_idx), cur_memory_size).long()
             
@@ -70,7 +75,7 @@ class Memory(nn.Module):
             self.memory_x[i*cur_memory_size      : (i+1)*cur_memory_size]      = memory_x_before[bin_idx][bins]
             self.memory_y[i*cur_memory_size      : (i+1)*cur_memory_size]      = memory_y_before[bin_idx][bins]
             self.memory_energy[i*cur_memory_size : (i+1)*cur_memory_size]      = memory_energy_before[bin_idx][bins]
-    
+            self.memory_rep[i*cur_memory_size    : (i+1)*cur_memory_size]      = memory_rep_before[bin_idx][bins]
     def merge_samples(self):
         if self.task_id > 2:
             former_classes_in_memory = (self.task_id-2) * self.num_cls_per_task # 4
@@ -80,28 +85,31 @@ class Memory(nn.Module):
             all_new_x      = torch.cat(self.new_x, dim=0)
             all_new_y      = torch.cat(self.new_y, dim=0)
             all_new_energy = torch.cat(self.new_energy, dim=0)
+            all_new_rep    = torch.cat(self.new_rep, dim=0)
             
             self.memory_x[former_memory_size*former_classes_in_memory:former_memory_size*classes_in_memory]      = all_new_x
             self.memory_y[former_memory_size*former_classes_in_memory:former_memory_size*classes_in_memory]      = all_new_y
             self.memory_energy[former_memory_size*former_classes_in_memory:former_memory_size*classes_in_memory] = all_new_energy
-            
+            self.memory_rep[former_memory_size*former_classes_in_memory:former_memory_size*classes_in_memory]    = all_new_rep
             # reset candidates
             self.new_x      = [torch.empty(0) for _ in range(self.num_cls_per_task)]
             self.new_y      = [torch.empty(0) for _ in range(self.num_cls_per_task)]
             self.new_energy = [torch.empty(0) for _ in range(self.num_cls_per_task)]
+            self.new_rep    = [torch.empty(0) for _ in range(self.num_cls_per_task)]
         else:
             all_new_x      = torch.cat(self.new_x, dim=0)
             all_new_y      = torch.cat(self.new_y, dim=0)
             all_new_energy = torch.cat(self.new_energy, dim=0)
-
+            all_new_rep    = torch.cat(self.new_rep, dim=0)
             self.memory_x[:]      = all_new_x
             self.memory_y[:]      = all_new_y
             self.memory_energy[:] = all_new_energy
-            
+            self.memory_rep[:]    = all_new_rep
             # reset candidates
             self.new_x      = [torch.empty(0) for _ in range(self.num_cls_per_task)]
             self.new_y      = [torch.empty(0) for _ in range(self.num_cls_per_task)]
             self.new_energy = [torch.empty(0) for _ in range(self.num_cls_per_task)]
+            self.new_rep    = [torch.empty(0) for _ in range(self.num_cls_per_task)]
         # torch.save(self.memory_x, f"memory_x_{self.task_id}.pt")
         # torch.save(self.memory_y, f"memory_y_{self.task_id}.pt")
     def update_memory(self, task_id):
@@ -152,7 +160,7 @@ class Memory(nn.Module):
         self.new_x[cur_cls]      = self.new_x[cur_cls][bin_idx][bins]
         self.new_y[cur_cls]      = self.new_y[cur_cls][bin_idx][bins]
         self.new_energy[cur_cls] = self.new_energy[cur_cls][bin_idx][bins]
-        
+        self.new_rep[cur_cls]    = self.new_rep[cur_cls][bin_idx][bins]
         # self.memory_x[cur_cls*self.cur_memory_size :      (cur_cls+1)*self.cur_memory_size]      = temp_memory_x
         # self.memory_y[cur_cls*self.cur_memory_size :      (cur_cls+1)*self.cur_memory_size]      = temp_memory_y
         # self.memory_energy[cur_cls*self.cur_memory_size : (cur_cls+1)*self.cur_memory_size]      = temp_memory_energy
@@ -166,26 +174,34 @@ class Memory(nn.Module):
         temp_memory_x      = torch.empty(0)
         temp_memory_y      = torch.empty(0)
         temp_memory_energy = torch.empty(0)
+        temp_memory_rep    = torch.empty(0)
         pbar = tqdm(loader, total=loader.__len__(), position=0, leave=True, desc="Calculating Energies of Task data", colour='red')
         
         for sample in pbar:
-            x, y          = sample[0].to(device), sample[1].to(device)
-            joint_targets = get_target(task_class_set, y).to(device).long()
-            y_ans_idx     = get_ans_idx(task_class_set, y).to(device)
-            energy        = model(x, joint_targets)
-            true_energy   = energy.gather(dim=1, index=y_ans_idx) # |bs x 1| -> output with true class
+            x, y               = sample[0].to(device), sample[1].to(device)
+            joint_targets      = get_target(task_class_set, y).to(device).long()
+            y_ans_idx          = get_ans_idx(task_class_set, y).to(device)
+            energy, rep        = model(x, joint_targets)
+            true_energy        = energy.gather(dim=1, index=y_ans_idx) # |bs x 1| -> output with true class
+            # true_rep           = rep.gather(dim=1, index=y_ans_idx)
             
             temp_memory_x      = torch.cat((temp_memory_x, x.detach().cpu()))
             temp_memory_y      = torch.cat((temp_memory_y, y.detach().cpu()))
             temp_memory_energy = torch.cat((temp_memory_energy, true_energy.detach().cpu().view(-1)))
+            temp_memory_rep    = torch.cat((temp_memory_rep, rep.detach().cpu()))
         # print(temp_memory_x.shape)
         # print(temp_memory_y.shape)
         # print(temp_memory_energy.shape)
         for cur_cls_idx, cl in enumerate(cur_task_classes):        
-            index                        = (temp_memory_y == cl).nonzero(as_tuple=True)
+            index                        = (temp_memory_y == cl).nonzero(as_tuple=True)[0]
+            torch.save(temp_memory_x[index].view(-1, self.flattened_shape), f"asset/cls_full/cls_{cl}_full_x.pt")
+            torch.save(temp_memory_y[index], f"asset/cls_full/cls_{cl}_full_y.pt")
+            torch.save(temp_memory_energy[index], f"asset/cls_full/cls_{cl}_full_energy.pt")
+            torch.save(temp_memory_rep[index,cl,:], f"asset/cls_full/cls_{cl}_full_rep.pt")
             self.new_x[cur_cls_idx]      = torch.cat((self.new_x[cur_cls_idx], temp_memory_x[index].view(-1, self.flattened_shape)), dim=0)
             self.new_y[cur_cls_idx]      = torch.cat((self.new_y[cur_cls_idx], temp_memory_y[index]), dim=0)
             self.new_energy[cur_cls_idx] = torch.cat((self.new_energy[cur_cls_idx], temp_memory_energy[index]), dim=0)
+            self.new_rep[cur_cls_idx]    = torch.cat((self.new_rep[cur_cls_idx], temp_memory_rep[index,cl,:]), dim=0)
         # for cur_cls_idx, cl in enumerate(cur_task_classes):
             self._bin_based_sampling_offline(cur_cls_idx)
     
