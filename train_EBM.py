@@ -82,7 +82,7 @@ def trainer(args,
             torch.save(final_memory_x, 'asset/final_memory/final_memory_x.pt')
             torch.save(final_memory_y, 'asset/final_memory/final_memory_y.pt')
             torch.save(final_memory_energy, 'asset/final_memory/final_memory_energy.pt')
-            torch.save(final_memory_energy, 'asset/final_memory/final_memory_rep.pt')
+            torch.save(final_memory_rep, 'asset/final_memory/final_memory_rep.pt')
     # final_energies = calculate_final_energy(model=model, 
     #                                         device=device, 
     #                                         loader=train_loader, 

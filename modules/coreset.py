@@ -26,7 +26,7 @@ class Memory(nn.Module):
         self.memory_x      = torch.FloatTensor(self.memory_size, self.flattened_shape).fill_(0)
         self.memory_y      = torch.LongTensor(self.memory_size).fill_(0)
         self.memory_energy = torch.FloatTensor(self.memory_size).fill_(0)
-        self.memory_rep    = torch.FloatTensor(self.memory_size).fill_(0)
+        self.memory_rep    = torch.FloatTensor(self.memory_size, 512).fill_(0)
         
         self.new_x      = [torch.empty(0) for _ in range(self.num_cls_per_task)]
         self.new_y      = [torch.empty(0) for _ in range(self.num_cls_per_task)]
@@ -101,10 +101,13 @@ class Memory(nn.Module):
             all_new_y      = torch.cat(self.new_y, dim=0)
             all_new_energy = torch.cat(self.new_energy, dim=0)
             all_new_rep    = torch.cat(self.new_rep, dim=0)
+            # print(self.new_rep[0].shape, self.new_rep[1].shape)
             self.memory_x[:]      = all_new_x
             self.memory_y[:]      = all_new_y
             self.memory_energy[:] = all_new_energy
+            # print(self.memory_rep[:].shape, all_new_rep.shape)
             self.memory_rep[:]    = all_new_rep
+        
             # reset candidates
             self.new_x      = [torch.empty(0) for _ in range(self.num_cls_per_task)]
             self.new_y      = [torch.empty(0) for _ in range(self.num_cls_per_task)]
@@ -198,6 +201,7 @@ class Memory(nn.Module):
             torch.save(temp_memory_y[index], f"asset/cls_full/cls_{cl}_full_y.pt")
             torch.save(temp_memory_energy[index], f"asset/cls_full/cls_{cl}_full_energy.pt")
             torch.save(temp_memory_rep[index,cl,:], f"asset/cls_full/cls_{cl}_full_rep.pt")
+            
             self.new_x[cur_cls_idx]      = torch.cat((self.new_x[cur_cls_idx], temp_memory_x[index].view(-1, self.flattened_shape)), dim=0)
             self.new_y[cur_cls_idx]      = torch.cat((self.new_y[cur_cls_idx], temp_memory_y[index]), dim=0)
             self.new_energy[cur_cls_idx] = torch.cat((self.new_energy[cur_cls_idx], temp_memory_energy[index]), dim=0)
