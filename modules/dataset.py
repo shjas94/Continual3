@@ -131,20 +131,22 @@ class Oxford_Pet(data.Dataset):
 
 
 class Coreset_Dataset(data.Dataset):
-    def __init__(self, data, targets, transform=None):
+    def __init__(self, data, targets, reps, full_energy, transform=None):
         self.data = data
         self.targets = targets
+        self.reps = reps
         self.transform = transform
-        
+        self.full_energy = full_energy
     def __getitem__(self, index):
         x = self.data[index]
         y = int(self.targets[index].item())
-        
+        reps = self.reps[index]
+        full_energy = self.full_energy[index]
         if self.transform:
             x = Image.fromarray(self.data[index].astype(np.uint8).transpose(1,2,0))
             x = self.transform(x)
         
-        return x, y
+        return x, y, reps, full_energy
     
     def __len__(self):
         return len(self.data)
@@ -347,7 +349,7 @@ def get_loader(args, train_tasks, test_tasks):
                                         shuffle=True, 
                                         num_workers=args.num_workers, 
                                         pin_memory=args.cuda, 
-                                        drop_last=True))
+                                        drop_last=False))
     print("=================Making Test Dataloader=================")
     for test_task in tqdm(test_tasks, colour='green', ncols=15, dynamic_ncols=True):
         test_loaders.append(DataLoader(test_task, 

@@ -1,13 +1,14 @@
 import argparse
 import os
 import torch
+import torch.nn as nn
 from torch.utils.data import DataLoader, RandomSampler
 import numpy as np
 from tqdm import tqdm
 import wandb
 from modules.models import get_model
 from modules.dataset import prepare_data
-from modules.loss import get_criterion
+from modules.loss import get_criterion, energy_nll_loss
 from modules.coreset import Memory
 from utils.utils import seed_everything, get_optimizer, calculate_answer, get_target, get_ans_idx
 from utils.drawer import draw_confusion, draw_tsne_proj
@@ -113,6 +114,7 @@ def train_one_epoch(args,
                                    sampler=memory_sampler,
                                    batch_size=args.batch_size,
                                    drop_last=False)
+        mem_rep_loss = nn.MSELoss()
     for it, sample in enumerate(pbar):
         optimizer.zero_grad()
         if args.dataset == "splitted_mnist" or args.dataset == "cifar10" or args.dataset == "cifar100" or args.dataset == "tiny_imagenet":
@@ -134,6 +136,8 @@ def train_one_epoch(args,
             mem_sample        = next(iter(memory_loader))
             mem_x             = mem_sample[0].to(device)
             mem_y             = mem_sample[1].to(device)
+            mem_reps          = mem_sample[2].to(device)
+            mem_full_energy   = mem_sample[3].to(device)
             mem_joint_targets = get_target(task_class_set, mem_y).to(device) 
             mem_y_ans_idx     = get_ans_idx(task_class_set, mem_y).to(device)
             
@@ -144,49 +148,38 @@ def train_one_epoch(args,
             y_ans_idx     = torch.cat((y_ans_idx, mem_y_ans_idx), dim=0)
             total_len    += mem_x.size(0)
             
-        energy, rep = model(x, joint_targets)
+        energy, reps = model(x, joint_targets)
         if args.criterion == 'nll_energy':
             if args.use_memory and task_num > 1:
                 cur_energies, mem_energies = energy[:cur_data_size, :], energy[cur_data_size:, :]
                 
                 cur_loss = criterion(energy=cur_energies,
-                                     y_ans_idx=y_ans_idx[:cur_data_size, :],
-                                     classes_per_task=args.num_classes//args.num_tasks,
-                                     task_class_set=task_class_set,
-                                     coreset_mode=False)
+                                     y_ans_idx=y_ans_idx[:cur_data_size])
                 mem_loss = criterion(energy=mem_energies,
-                                     y_ans_idx=y_ans_idx[cur_data_size:, :],
-                                     classes_per_task=args.num_classes//args.num_tasks,
-                                     task_class_set=task_class_set,
-                                     coreset_mode=True)
+                                     y_ans_idx=y_ans_idx[cur_data_size:])
                 loss = cur_loss + args.lam*mem_loss
             else:
                 loss = criterion(energy=energy,
-                                 y_ans_idx=y_ans_idx,
-                                 classes_per_task=args.num_classes//args.num_tasks,
-                                 task_class_set=task_class_set,
-                                 coreset_mode=False)
+                                 y_ans_idx=y_ans_idx)
         elif args.criterion == 'contrastive_divergence':
             if args.use_memory and task_num > 1:
                 cur_energies, mem_energies = energy[:cur_data_size, :], energy[cur_data_size:, :]
-                
-                cur_loss = criterion(energy=cur_energies,
-                                     y_ans_idx=y_ans_idx[:cur_data_size, :],
-                                     device=device,
-                                     class_per_task=args.num_classes//args.num_tasks,
-                                     coreset_mode=False)
-                mem_loss = criterion(energy=mem_energies,
-                                     y_ans_idx=y_ans_idx[cur_data_size:, :],
-                                     device=device,
-                                     class_per_task=args.num_classes//args.num_tasks,
-                                     coreset_mode=True)
-                loss = cur_loss + args.lam*mem_loss
+                cur_cd_loss = criterion(energy    = cur_energies,
+                                        y_ans_idx = y_ans_idx[:cur_data_size],
+                                        device    = device)
+                # mem_cd_loss = criterion(energy    = mem_energies,
+                #                         y_ans_idx = y_ans_idx[cur_data_size:],
+                #                         device    = device)
+                mem_cd_loss = energy_nll_loss(mem_energies, y_ans_idx[cur_data_size:])
+                # loss = cur_cd_loss + 2.0*mem_cd_loss + args.lam*energy_alignment_loss(mem_energies, mem_full_energy, args.num_classes//args.num_tasks)
+                gt_rep = torch.empty(0).to(device)
+                for i, cls_i in enumerate(y_ans_idx[cur_data_size:]):
+                    gt_rep = torch.cat((gt_rep, reps[cur_data_size:][i, cls_i, :]), dim=0)
+                loss = cur_cd_loss + mem_cd_loss + args.lam*mem_rep_loss(gt_rep, mem_reps)
             else:
-                loss = criterion(energy=energy,
-                                 y_ans_idx=y_ans_idx,
-                                 device=device,
-                                 class_per_task=args.num_classes//args.num_tasks,
-                                 coreset_mode=False)
+                loss = criterion(energy    = energy,
+                                 y_ans_idx = y_ans_idx,
+                                 device    = device)
         cur_len       += cur_data_size
         mem_len       += x.size(0) - cur_data_size
         train_answers += calculate_answer(energy, y_ans_idx)
@@ -208,13 +201,15 @@ def train_one_epoch(args,
         # To Do
         if args.use_memory and args.learning_mode == 'online':
             for i in range(args.num_classes // args.num_tasks): 
-                cl         = torch.tensor(list(task_class_set)[-1*(args.num_classes // args.num_tasks):])[i] 
-                idx        = (y == cl).nonzero(as_tuple=True)[0] 
-                x_cur      = x[idx].detach().cpu()
-                y_cur      = y[idx].detach().cpu()
-                energy_cur = energy.gather(dim=1, index=y_ans_idx)
-                energy_cur = energy_cur[idx].detach().cpu()
-                memory.add_sample_online(x_cur, y_cur, energy_cur, i)
+                cl          = torch.tensor(list(task_class_set)[-1*(args.num_classes // args.num_tasks):])[i] 
+                idx         = (y == cl).nonzero(as_tuple=True)[0] 
+                x_cur       = x[idx].detach().cpu()
+                y_cur       = y[idx].detach().cpu()
+                reps_cur    = reps[idx, cl, :].detach().cpu()
+                energy_cur  = energy.gather(dim=1, index=y_ans_idx)
+                energy_cur  = energy_cur[idx].detach().cpu()
+                energy_full = torch.cat((energy[idx].detach().cpu(), torch.zeros(len(idx), args.num_classes - energy.size(1))), dim=1)
+                memory.add_sample_online(x_cur, y_cur, energy_cur, energy_full, reps_cur, i)
 
     total_class_set = total_class_set.union(task_class_set)
     return total_class_set, train_answers / total_len, train_loss_list, memory
