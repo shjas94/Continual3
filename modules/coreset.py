@@ -77,7 +77,6 @@ class Memory(nn.Module):
             memory_rep_before      = self.memory_rep[i*former_memory_size    : (i+1)*former_memory_size]
             _, bin_idx = torch.sort(memory_energy_before)
             bins       = torch.linspace(0, len(bin_idx), cur_memory_size).long()
-            
             bins[-1]   = bins[-1]-1
             self.memory_x[i*cur_memory_size      : (i+1)*cur_memory_size]      = memory_x_before[bin_idx][bins]
             self.memory_y[i*cur_memory_size      : (i+1)*cur_memory_size]      = memory_y_before[bin_idx][bins]
@@ -221,12 +220,12 @@ class Memory(nn.Module):
             torch.save(temp_memory_x[index].view(-1, self.flattened_shape), f"asset/cls_full/cls_{cl}_full_x.pt")
             torch.save(temp_memory_y[index], f"asset/cls_full/cls_{cl}_full_y.pt")
             torch.save(temp_memory_energy[index], f"asset/cls_full/cls_{cl}_full_energy.pt")
-            torch.save(temp_memory_rep[index,cl,:], f"asset/cls_full/cls_{cl}_full_rep.pt")
+            torch.save(temp_memory_rep[index, :], f"asset/cls_full/cls_{cl}_full_rep.pt")
             
             self.new_x[cur_cls_idx]       = torch.cat((self.new_x[cur_cls_idx], temp_memory_x[index].view(-1, self.flattened_shape)), dim=0)
             self.new_y[cur_cls_idx]       = torch.cat((self.new_y[cur_cls_idx], temp_memory_y[index]), dim=0)
             self.new_energy[cur_cls_idx]  = torch.cat((self.new_energy[cur_cls_idx], temp_memory_energy[index]), dim=0)
-            self.new_rep[cur_cls_idx]     = torch.cat((self.new_rep[cur_cls_idx], temp_memory_rep[index,cl,:]), dim=0)
+            self.new_rep[cur_cls_idx]     = torch.cat((self.new_rep[cur_cls_idx], temp_memory_rep[index, :]), dim=0)
             self.new_full_en[cur_cls_idx] = torch.cat((self.new_full_en[cur_cls_idx], temp_mem_full_en[index]), dim=0)
             self.new_full_en[cur_cls_idx] = torch.cat((self.new_full_en[cur_cls_idx], torch.zeros((self.new_full_en[cur_cls_idx].size(0), self.args.num_classes-(self.task_id)*len(cur_task_classes)))), dim=1)
         # for cur_cls_idx, cl in enumerate(cur_task_classes):

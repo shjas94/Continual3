@@ -4,13 +4,14 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, RandomSampler
 import numpy as np
+import pandas as pd
 from tqdm import tqdm
 import wandb
 from modules.models import get_model
 from modules.dataset import prepare_data
 from modules.loss import get_criterion, energy_nll_loss
 from modules.coreset import Memory
-from utils.utils import seed_everything, get_optimizer, calculate_answer, get_target, get_ans_idx
+from utils.utils import seed_everything, get_optimizer, calculate_answer, get_target, get_ans_idx, aug
 from utils.drawer import draw_confusion, draw_tsne_proj
 from utils.intermediate_infos import IntermediateInfos
 import matplotlib.colors as mcolors
@@ -80,10 +81,10 @@ def trainer(args,
             final_memory_y      = memory.y
             final_memory_energy = memory.energy
             final_memory_rep    = memory.rep
-            torch.save(final_memory_x, 'asset/final_memory/final_memory_x.pt')
-            torch.save(final_memory_y, 'asset/final_memory/final_memory_y.pt')
-            torch.save(final_memory_energy, 'asset/final_memory/final_memory_energy.pt')
-            torch.save(final_memory_rep, 'asset/final_memory/final_memory_rep.pt')
+            # torch.save(final_memory_x, 'asset/final_memory/final_memory_x.pt')
+            # torch.save(final_memory_y, 'asset/final_memory/final_memory_y.pt')
+            # torch.save(final_memory_energy, 'asset/final_memory/final_memory_energy.pt')
+            # torch.save(final_memory_rep, 'asset/final_memory/final_memory_rep.pt')
     # final_energies = calculate_final_energy(model=model, 
     #                                         device=device, 
     #                                         loader=train_loader, 
@@ -148,7 +149,7 @@ def train_one_epoch(args,
             y_ans_idx     = torch.cat((y_ans_idx, mem_y_ans_idx), dim=0)
             total_len    += mem_x.size(0)
             
-        energy, reps = model(x, joint_targets)
+        energy, reps = model(aug(x), joint_targets)
         if args.criterion == 'nll_energy':
             if args.use_memory and task_num > 1:
                 cur_energies, mem_energies = energy[:cur_data_size, :], energy[cur_data_size:, :]
@@ -172,10 +173,11 @@ def train_one_epoch(args,
                 #                         device    = device)
                 mem_cd_loss = energy_nll_loss(mem_energies, y_ans_idx[cur_data_size:])
                 # loss = cur_cd_loss + 2.0*mem_cd_loss + args.lam*energy_alignment_loss(mem_energies, mem_full_energy, args.num_classes//args.num_tasks)
-                gt_rep = torch.empty(0).to(device)
-                for i, cls_i in enumerate(y_ans_idx[cur_data_size:]):
-                    gt_rep = torch.cat((gt_rep, reps[cur_data_size:][i, cls_i, :]), dim=0)
-                loss = cur_cd_loss + mem_cd_loss + args.lam*mem_rep_loss(gt_rep, mem_reps)
+                # gt_rep = torch.empty(0).to(device)
+                # for i, cls_i in enumerate(y_ans_idx[cur_data_size:]):
+                #     gt_rep = torch.cat((gt_rep, reps[cur_data_size:][i, cls_i, :]), dim=0)
+                loss = cur_cd_loss + args.alpha*mem_cd_loss + args.beta*mem_rep_loss(reps[cur_data_size:], mem_reps)
+                #  + args.lam*mem_rep_loss(gt_rep, mem_reps)
             else:
                 loss = criterion(energy    = energy,
                                  y_ans_idx = y_ans_idx,
@@ -205,7 +207,7 @@ def train_one_epoch(args,
                 idx         = (y == cl).nonzero(as_tuple=True)[0] 
                 x_cur       = x[idx].detach().cpu()
                 y_cur       = y[idx].detach().cpu()
-                reps_cur    = reps[idx, cl, :].detach().cpu()
+                reps_cur    = reps[idx, :].detach().cpu()
                 energy_cur  = energy.gather(dim=1, index=y_ans_idx)
                 energy_cur  = energy_cur[idx].detach().cpu()
                 energy_full = torch.cat((energy[idx].detach().cpu(), torch.zeros(len(idx), args.num_classes - energy.size(1))), dim=1)
@@ -355,6 +357,7 @@ def main(args):
                        config=args)
             wandb.watch(model)
     after_train_energies = []
+    acc_matrix = pd.DataFrame(index=np.arange(1, args.num_tasks+1), columns=np.arange(1, args.num_tasks+1))
     for task_num in range(len(train_loaders)):
         train_loader = train_loaders[task_num]
         print(f"=================Start Training Task{task_num+1}=================")
@@ -404,13 +407,21 @@ def main(args):
             total_y = np.concatenate(task_infos.get_infos('ys'), axis=0)
             draw_tsne_proj(args.fig_root, total_pred_rep, total_y, args.num_classes // args.num_tasks, task_num+1, args.seed, \
                 task_infos.get_infos('lowest_img_infos'), mcolors.CSS4_COLORS, 'pred_with_gt_labels', dataset=args.dataset)
-            
+        
+        task_acc = task_infos.get_infos('task_acc')
+        acc_matrix.iloc[task_num, :] = np.array(task_acc)    
         if args.wandb:
-            task_acc = task_infos.get_infos('task_acc')
             for i in range(task_infos.__len__('task_acc')):
                 wandb.log({
                 f"Task {i+1} Test Accuracy" : task_acc[i]
                 })
+    if not os.path.exists('asset'):
+        os.mkdir('asset')
+    if not os.path.exists(os.path.join('asset', 'acc_matrix')):
+        os.mkdir(os.path.join('asset', 'acc_matrix'))
+    if not os.path.exists(os.path.join('asset', 'acc_matrix', f"{args.dataset}_mem_{args.memory_size}")):
+        os.mkdir(os.path.join('asset', 'acc_matrix', f"{args.dataset}_mem_{args.memory_size}"))
+    acc_matrix.to_csv(os.path.join('asset', 'acc_matrix', f"{args.dataset}_mem_{args.memory_size}", f"{args.seed}th_seed.csv"))
     ##### 임시 구현 #####
     # os.mkdir('asset/after_train_energies')
     # for i in range(len(after_train_energies)):
@@ -442,7 +453,8 @@ if __name__ == "__main__":
                                                                                        'confused_pred', 'representation', 'bin_based'))
     parser.add_argument('--fixed_memory_slot', action='store_true', default=True)
     parser.add_argument('--img_size', type=int, default=32)
-    parser.add_argument('--lam', type=float, default=1.0, help='term for balancing current loss and memory loss')
+    parser.add_argument('--alpha', type=float, default=1.0, help='term for balancing current loss and memory loss')
+    parser.add_argument('--beta', type=float, default=1.0, help='term for balancing contrastive divergence loss and representation loss')
     parser.add_argument('--num_channels', type=int, default=3)
     parser.add_argument('--memory_size', type=int, default=20)
     parser.add_argument('--save_confusion_fig', default=True, action='store_true')
@@ -453,7 +465,7 @@ if __name__ == "__main__":
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--checkpoint_path', type=str, default='./checkpoint')
     parser.add_argument('--checkpoint', type=str, default='')
-    parser.add_argument('--wandb', default=False, action='store_true')
+    parser.add_argument('--wandb', default=True, action='store_true')
     parser.add_argument('--run_name', type=str, default='')
     args = parser.parse_args()
     main(args)

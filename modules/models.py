@@ -114,6 +114,7 @@ class ResNet(nn.Module):
         z = self.extractor(x)
         z = self.avgpool(z)
         z = z.view(bs, -1)
+        rep = z
         y_z = self.embedding(y)
         y_z = F.softmax(y_z, dim=-1) * y_z.shape[-1]
         # z = self.fc1(z)
@@ -121,7 +122,6 @@ class ResNet(nn.Module):
         z = z * y_z
         
         # z = self.fc2(z)
-        rep = z
         return self.fc3(z).view(bs, -1), rep
 
 class EBM_Beginning(nn.Module):
