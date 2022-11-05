@@ -11,9 +11,7 @@ def calculate_avg_acc(df):
 def calculate_avg_forg(df):
     accs = df.values
     max_accs = np.max(accs[:, :-1], axis=0)
-    print(max_accs)
     final_accs = accs[-1, :-1]
-    print(final_accs)
     return np.mean(max_accs-final_accs)
 def calculate_avg_acc_multiple_seed(df_path='asset/acc_matrix', args=None):
     full_path = os.path.join(df_path, f"{args.dataset}_mem_{args.memory_size}")
