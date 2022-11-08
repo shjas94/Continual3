@@ -43,7 +43,7 @@ def seed_everything(seed):
 
 def get_optimizer(optimizer, lr, parameters, weight_decay):
     if optimizer == 'adam':
-        return Adam(parameters, lr, weight_decay=weight_decay, eps=1e-06)
+        return Adam(parameters, lr, weight_decay=weight_decay, eps=1e-04)
     elif optimizer == 'adamw':
         return AdamW(parameters, lr, weight_decay=weight_decay)
     elif optimizer == 'sgd':
@@ -93,13 +93,23 @@ def calculate_final_energy(model, device, loader, task_class_set):
         cls_energies.append(task_energy[idx,:])
     return cls_energies
 
-def aug(img):
-    augmentations = transforms.Compose([
-                                        transforms.RandomResizedCrop(size=(32, 32), scale=(0.6, 1.)),
-                                        transforms.RandomHorizontalFlip(p=0.5),
-                                        # transforms.RandomVerticalFlip(),
-                                        # transforms.RandomRotation(degrees=(0, 30)),
-                                        transforms.RandomApply([
-                                                                transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)
-                                                                ], p=0.5)])
+def aug(img, args):
+    if args.learning_mode == "online":
+        augmentations = transforms.Compose([
+                                            transforms.RandomResizedCrop(size=(args.img_size, args.img_size), scale=(0.6, 1.)),
+                                            transforms.RandomHorizontalFlip(),
+                                            # transforms.RandomVerticalFlip(),
+                                            # transforms.RandomRotation(degrees=(0, 30)),
+                                            transforms.RandomApply([
+                                                                     transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)
+                                                                    ], p=0.5)])
+    else:
+        augmentations = transforms.Compose([
+                                            transforms.RandomResizedCrop(size=(args.img_size, args.img_size), scale=(0.5, 1.)),
+                                            transforms.RandomHorizontalFlip(),
+                                            # transforms.RandomVerticalFlip(),
+                                            # transforms.RandomRotation(degrees=(0, 30)),
+                                            transforms.RandomApply([
+                                                                     transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)
+                                                                    ], p=0.5)])
     return augmentations(img)

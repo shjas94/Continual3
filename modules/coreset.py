@@ -68,22 +68,48 @@ class Memory(nn.Module):
         # memory 버퍼에 bin sampling을 적용  
         classes_in_memory  = (self.task_id-2) * self.num_cls_per_task
         former_memory_size = self.memory_size // classes_in_memory
-        cur_memory_size    = self.memory_size // ((self.task_id-1)*self.num_cls_per_task)
+        after_memory_size    = self.memory_size // ((self.task_id-1)*self.num_cls_per_task)
         for i in range(classes_in_memory):
             memory_x_before        = self.memory_x[i*former_memory_size      : (i+1)*former_memory_size]
             memory_y_before        = self.memory_y[i*former_memory_size      : (i+1)*former_memory_size]
             memory_energy_before   = self.memory_energy[i*former_memory_size : (i+1)*former_memory_size]
             mem_energy_full_before = self.mem_full_en[i*former_memory_size   : (i+1)*former_memory_size]
             memory_rep_before      = self.memory_rep[i*former_memory_size    : (i+1)*former_memory_size]
-            _, bin_idx = torch.sort(memory_energy_before)
-            bins       = torch.linspace(0, len(bin_idx), cur_memory_size).long()
-            bins[-1]   = bins[-1]-1
-            self.memory_x[i*cur_memory_size      : (i+1)*cur_memory_size]      = memory_x_before[bin_idx][bins]
-            self.memory_y[i*cur_memory_size      : (i+1)*cur_memory_size]      = memory_y_before[bin_idx][bins]
-            self.memory_energy[i*cur_memory_size : (i+1)*cur_memory_size]      = memory_energy_before[bin_idx][bins]
-            self.mem_full_en[i*cur_memory_size   : (i+1)*cur_memory_size]      = mem_energy_full_before[bin_idx][bins]
-            self.memory_rep[i*cur_memory_size    : (i+1)*cur_memory_size]      = memory_rep_before[bin_idx][bins]
             
+            if self.args.memory_option == "bin_based":
+                _, bin_idx = torch.sort(memory_energy_before)
+                bins       = torch.linspace(0, len(bin_idx), after_memory_size).long()
+                bins[-1]   = bins[-1]-1
+                self.memory_x[i*after_memory_size      : (i+1)*after_memory_size]      = memory_x_before[bin_idx][bins]
+                self.memory_y[i*after_memory_size      : (i+1)*after_memory_size]      = memory_y_before[bin_idx][bins]
+                self.memory_energy[i*after_memory_size : (i+1)*after_memory_size]      = memory_energy_before[bin_idx][bins]
+                self.mem_full_en[i*after_memory_size   : (i+1)*after_memory_size]      = mem_energy_full_before[bin_idx][bins]
+                self.memory_rep[i*after_memory_size    : (i+1)*after_memory_size]      = memory_rep_before[bin_idx][bins]
+                
+            elif self.args.memory_option == "random_sample":
+                idx = torch.randperm(len(memory_energy_before))[:after_memory_size]
+                self.memory_x[i*after_memory_size      : (i+1)*after_memory_size]      = memory_x_before[idx]
+                self.memory_y[i*after_memory_size      : (i+1)*after_memory_size]      = memory_y_before[idx]
+                self.memory_energy[i*after_memory_size : (i+1)*after_memory_size]      = memory_energy_before[idx]
+                self.mem_full_en[i*after_memory_size   : (i+1)*after_memory_size]      = mem_energy_full_before[idx]
+                self.memory_rep[i*after_memory_size    : (i+1)*after_memory_size]      = memory_rep_before[idx]
+                
+            elif self.args.memory_option == "high_energy":
+                idx = torch.topk(memory_energy_before, after_memory_size, dim=0, largest=True)[1]
+                self.memory_x[i*after_memory_size      : (i+1)*after_memory_size]      = memory_x_before[idx]
+                self.memory_y[i*after_memory_size      : (i+1)*after_memory_size]      = memory_y_before[idx]
+                self.memory_energy[i*after_memory_size : (i+1)*after_memory_size]      = memory_energy_before[idx]
+                self.mem_full_en[i*after_memory_size   : (i+1)*after_memory_size]      = mem_energy_full_before[idx]
+                self.memory_rep[i*after_memory_size    : (i+1)*after_memory_size]      = memory_rep_before[idx]
+                
+            elif self.args.memory_option == "low_energy":
+                idx = torch.topk(memory_energy_before, after_memory_size, dim=0, largest=True)[1]
+                self.memory_x[i*after_memory_size      : (i+1)*after_memory_size]      = memory_x_before[idx]
+                self.memory_y[i*after_memory_size      : (i+1)*after_memory_size]      = memory_y_before[idx]
+                self.memory_energy[i*after_memory_size : (i+1)*after_memory_size]      = memory_energy_before[idx]
+                self.mem_full_en[i*after_memory_size   : (i+1)*after_memory_size]      = mem_energy_full_before[idx]
+                self.memory_rep[i*after_memory_size    : (i+1)*after_memory_size]      = memory_rep_before[idx]
+                
     def merge_samples(self):
         if self.task_id > 2:
             former_classes_in_memory = (self.task_id-2) * self.num_cls_per_task # 4
@@ -140,37 +166,7 @@ class Memory(nn.Module):
         self._drop_samples()
         self.merge_samples()
       
-    def add_sample_online(self, x, y, energy, full_energy, reps, cur_cls_idx):
-        # 매 iteration마다 수행
-        '''
-        Online Bin-Based Sampling with non-fixed memory slot
-        
-        cur_cls_idx : cls idx of current task class set.  ex) if num_cls_per_task = 2, then cur_cls_idx is 0 or 1
-        x           : x with cur_cls_idx.
-        y           : y with cur_cls_idx.
-        '''
-        
-        x = x.view(-1, self.flattened_shape)
-        # 남은 slot 크기보다 현재 batch 크기가 더 작다면
-        # 그대로 concat
-        self.new_x[cur_cls_idx]       = torch.cat((self.new_x[cur_cls_idx], x), dim=0)
-        self.new_y[cur_cls_idx]       = torch.cat((self.new_y[cur_cls_idx], y), dim=0)
-        self.new_energy[cur_cls_idx]  = torch.cat((self.new_energy[cur_cls_idx], energy.view(-1)), dim=0)
-        self.new_rep[cur_cls_idx]     = torch.cat((self.new_rep[cur_cls_idx], reps), dim=0)
-        self.new_full_en[cur_cls_idx] = torch.cat((self.new_full_en[cur_cls_idx], full_energy), dim=0)
-        
-        if self.new_x[cur_cls_idx].size(0) > self.cur_memory_size: 
-            
-            # 현재 저장된 memory의 크기가 class당 최대 메모리 크기보다 크다면
-            # -> bin sampling
-            _, bin_idx = torch.sort(self.new_energy[cur_cls_idx])
-            bins       = torch.linspace(0, len(bin_idx), self.cur_memory_size).long()
-            bins[-1]   = bins[-1]-1
-            self.new_x[cur_cls_idx]       = self.new_x[cur_cls_idx][bin_idx][bins]
-            self.new_y[cur_cls_idx]       = self.new_y[cur_cls_idx][bin_idx][bins]
-            self.new_energy[cur_cls_idx]  = self.new_energy[cur_cls_idx][bin_idx][bins]
-            self.new_rep[cur_cls_idx]     = self.new_rep[cur_cls_idx][bin_idx][bins]
-            self.new_full_en[cur_cls_idx] = self.new_full_en[cur_cls_idx][bin_idx][bins]
+    
             
     def _bin_based_sampling_offline(self, cur_cls):
         cur_energy = self.new_energy[cur_cls]
@@ -217,10 +213,10 @@ class Memory(nn.Module):
         
         for cur_cls_idx, cl in enumerate(cur_task_classes):        
             index                        = (temp_memory_y == cl).nonzero(as_tuple=True)[0]
-            torch.save(temp_memory_x[index].view(-1, self.flattened_shape), f"asset/cls_full/cls_{cl}_full_x.pt")
-            torch.save(temp_memory_y[index], f"asset/cls_full/cls_{cl}_full_y.pt")
-            torch.save(temp_memory_energy[index], f"asset/cls_full/cls_{cl}_full_energy.pt")
-            torch.save(temp_memory_rep[index, :], f"asset/cls_full/cls_{cl}_full_rep.pt")
+            # torch.save(temp_memory_x[index].view(-1, self.flattened_shape), f"asset/cls_full/cls_{cl}_full_x.pt")
+            # torch.save(temp_memory_y[index], f"asset/cls_full/cls_{cl}_full_y.pt")
+            # torch.save(temp_memory_energy[index], f"asset/cls_full/cls_{cl}_full_energy.pt")
+            # torch.save(temp_memory_rep[index, :], f"asset/cls_full/cls_{cl}_full_rep.pt")
             
             self.new_x[cur_cls_idx]       = torch.cat((self.new_x[cur_cls_idx], temp_memory_x[index].view(-1, self.flattened_shape)), dim=0)
             self.new_y[cur_cls_idx]       = torch.cat((self.new_y[cur_cls_idx], temp_memory_y[index]), dim=0)
@@ -228,9 +224,71 @@ class Memory(nn.Module):
             self.new_rep[cur_cls_idx]     = torch.cat((self.new_rep[cur_cls_idx], temp_memory_rep[index, :]), dim=0)
             self.new_full_en[cur_cls_idx] = torch.cat((self.new_full_en[cur_cls_idx], temp_mem_full_en[index]), dim=0)
             self.new_full_en[cur_cls_idx] = torch.cat((self.new_full_en[cur_cls_idx], torch.zeros((self.new_full_en[cur_cls_idx].size(0), self.args.num_classes-(self.task_id)*len(cur_task_classes)))), dim=1)
-        # for cur_cls_idx, cl in enumerate(cur_task_classes):
             self._bin_based_sampling_offline(cur_cls_idx)
     
-    # def sample(self):
-    #     indices = torch.from_numpy(np.random.choice(self.memory_x.size(0), self.memory_batch_size, replace=False))
-    #     return (self.memory_x[indices].view(len(indices), self.args.num_channels, self.args.img_size, self.args.img_size), self.memory_y[indices])
+    def add_sample_online(self, x, y, energy, full_energy, reps, cur_cls_idx):
+        # 매 iteration마다 수행
+        '''
+        Online Bin-Based Sampling with non-fixed memory slot
+        
+        cur_cls_idx : cls idx of current task class set.  ex) if num_cls_per_task = 2, then cur_cls_idx is 0 or 1
+        x           : x with cur_cls_idx.
+        y           : y with cur_cls_idx.
+        '''
+        
+        x = x.view(-1, self.flattened_shape)
+        # 남은 slot 크기보다 현재 batch 크기가 더 작다면
+        # 그대로 concat
+        self.new_x[cur_cls_idx]       = torch.cat((self.new_x[cur_cls_idx], x), dim=0)
+        self.new_y[cur_cls_idx]       = torch.cat((self.new_y[cur_cls_idx], y), dim=0)
+        self.new_energy[cur_cls_idx]  = torch.cat((self.new_energy[cur_cls_idx], energy.view(-1)), dim=0)
+        self.new_rep[cur_cls_idx]     = torch.cat((self.new_rep[cur_cls_idx], reps), dim=0)
+        self.new_full_en[cur_cls_idx] = torch.cat((self.new_full_en[cur_cls_idx], full_energy), dim=0)
+        
+        if self.new_x[cur_cls_idx].size(0) > self.cur_memory_size: 
+            
+            # 현재 저장된 memory의 크기가 class당 최대 메모리 크기보다 크다면
+            # -> bin sampling
+            _, bin_idx = torch.sort(self.new_energy[cur_cls_idx])
+            bins       = torch.linspace(0, len(bin_idx), self.cur_memory_size).long()
+            bins[-1]   = bins[-1]-1
+            self.new_x[cur_cls_idx]       = self.new_x[cur_cls_idx][bin_idx][bins]
+            self.new_y[cur_cls_idx]       = self.new_y[cur_cls_idx][bin_idx][bins]
+            self.new_energy[cur_cls_idx]  = self.new_energy[cur_cls_idx][bin_idx][bins]
+            self.new_rep[cur_cls_idx]     = self.new_rep[cur_cls_idx][bin_idx][bins]
+            self.new_full_en[cur_cls_idx] = self.new_full_en[cur_cls_idx][bin_idx][bins]
+    
+    def online_random_sampling(self, x, y, energy, reps, full_energy, cur_cls_idx):
+        x = x.view(-1, self.flattened_shape)
+        self.new_x[cur_cls_idx]       = torch.cat((self.new_x[cur_cls_idx], x), dim=0)
+        self.new_y[cur_cls_idx]       = torch.cat((self.new_y[cur_cls_idx], y), dim=0)
+        self.new_energy[cur_cls_idx]  = torch.cat((self.new_energy[cur_cls_idx], energy.view(-1)), dim=0)
+        self.new_rep[cur_cls_idx]     = torch.cat((self.new_rep[cur_cls_idx], reps), dim=0)
+        self.new_full_en[cur_cls_idx] = torch.cat((self.new_full_en[cur_cls_idx], full_energy), dim=0)
+        
+        if self.new_x[cur_cls_idx].size(0) > self.cur_memory_size:
+            idx = torch.randperm(self.new_x[cur_cls_idx].size(0))[:self.cur_memory_size]
+            self.new_x[cur_cls_idx]       = self.new_x[cur_cls_idx][idx]
+            self.new_y[cur_cls_idx]       = self.new_y[cur_cls_idx][idx]
+            self.new_energy[cur_cls_idx]  = self.new_energy[cur_cls_idx][idx]
+            self.new_rep[cur_cls_idx]     = self.new_rep[cur_cls_idx][idx]
+            self.new_full_en[cur_cls_idx] = self.new_full_en[cur_cls_idx][idx]
+    def online_energy_based(self, x, y, energy, reps, full_energy, cur_cls_idx, energy_mode=True):
+        '''
+        if   energy_mode == True   -> High energy based sampling
+        elif energy_mode == Falase -> Low energy based sampling
+        '''
+        x = x.view(-1, self.flattened_shape)
+        self.new_x[cur_cls_idx]      = torch.cat((self.new_x[cur_cls_idx], x), dim=0)
+        self.new_y[cur_cls_idx]      = torch.cat((self.new_y[cur_cls_idx], y), dim=0)
+        self.new_energy[cur_cls_idx] = torch.cat((self.new_energy[cur_cls_idx], energy.view(-1)), dim=0)
+        self.new_rep[cur_cls_idx]    = torch.cat((self.new_rep[cur_cls_idx], reps), dim=0)
+        self.new_full_en[cur_cls_idx] = torch.cat((self.new_full_en[cur_cls_idx], full_energy), dim=0)
+        
+        if self.new_x[cur_cls_idx].size(0) > self.cur_memory_size:
+            idx = torch.topk(energy, self.cur_memory_size, dim=0, largest=energy_mode)[1]
+            self.new_x[cur_cls_idx] = self.new_x[cur_cls_idx][idx]
+            self.new_y[cur_cls_idx] = self.new_y[cur_cls_idx][idx]
+            self.new_energy[cur_cls_idx] = self.new_energy[cur_cls_idx][idx]
+            self.new_rep[cur_cls_idx] = self.new_rep[cur_cls_idx][idx]
+            self.new_full_en[cur_cls_idx] = self.new_full_en[cur_cls_idx][idx]

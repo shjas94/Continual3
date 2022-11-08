@@ -149,7 +149,7 @@ def train_one_epoch(args,
             y_ans_idx     = torch.cat((y_ans_idx, mem_y_ans_idx), dim=0)
             total_len    += mem_x.size(0)
             
-        energy, reps = model(aug(x), joint_targets)
+        energy, reps = model(aug(x, args), joint_targets)
         if args.criterion == 'nll_energy':
             if args.use_memory and task_num > 1:
                 cur_energies, mem_energies = energy[:cur_data_size, :], energy[cur_data_size:, :]
@@ -168,10 +168,10 @@ def train_one_epoch(args,
                 cur_cd_loss = criterion(energy    = cur_energies,
                                         y_ans_idx = y_ans_idx[:cur_data_size],
                                         device    = device)
-                # mem_cd_loss = criterion(energy    = mem_energies,
-                #                         y_ans_idx = y_ans_idx[cur_data_size:],
-                #                         device    = device)
-                mem_cd_loss = energy_nll_loss(mem_energies, y_ans_idx[cur_data_size:])
+                mem_cd_loss = criterion(energy    = mem_energies,
+                                        y_ans_idx = y_ans_idx[cur_data_size:],
+                                        device    = device)
+                # mem_cd_loss = energy_nll_loss(mem_energies, y_ans_idx[cur_data_size:])
                 # loss = cur_cd_loss + 2.0*mem_cd_loss + args.lam*energy_alignment_loss(mem_energies, mem_full_energy, args.num_classes//args.num_tasks)
                 # gt_rep = torch.empty(0).to(device)
                 # for i, cls_i in enumerate(y_ans_idx[cur_data_size:]):
@@ -211,7 +211,14 @@ def train_one_epoch(args,
                 energy_cur  = energy.gather(dim=1, index=y_ans_idx)
                 energy_cur  = energy_cur[idx].detach().cpu()
                 energy_full = torch.cat((energy[idx].detach().cpu(), torch.zeros(len(idx), args.num_classes - energy.size(1))), dim=1)
-                memory.add_sample_online(x_cur, y_cur, energy_cur, energy_full, reps_cur, i)
+                if args.memory_option == "bin_based":
+                    memory.add_sample_online(x_cur, y_cur, energy_cur, energy_full, reps_cur, i)
+                elif args.memory_option == "random_sample":
+                    memory.online_random_sampling(x_cur, y_cur, energy_cur, reps_cur, energy_full, i)
+                elif args.memory_option == "low_energy":
+                    memory.online_energy_based(x_cur, y_cur, energy_cur, reps_cur, energy_full, i, False)
+                elif args.memory_option == "high_energy":
+                    memory.online_energy_based(x_cur, y_cur, energy_cur, reps_cur, energy_full, i, True)
 
     total_class_set = total_class_set.union(task_class_set)
     return total_class_set, train_answers / total_len, train_loss_list, memory
@@ -457,7 +464,7 @@ if __name__ == "__main__":
     parser.add_argument('--beta', type=float, default=1.0, help='term for balancing contrastive divergence loss and representation loss')
     parser.add_argument('--num_channels', type=int, default=3)
     parser.add_argument('--memory_size', type=int, default=20)
-    parser.add_argument('--save_confusion_fig', default=True, action='store_true')
+    parser.add_argument('--save_confusion_fig', default=False, action='store_true')
     parser.add_argument('--save_matrices', default=False, action='store_true')
     parser.add_argument('--save_gt_fig', default=False, action='store_true')
     parser.add_argument('--save_pred_tsne_fig', default=False, action='store_true')
@@ -465,7 +472,7 @@ if __name__ == "__main__":
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--checkpoint_path', type=str, default='./checkpoint')
     parser.add_argument('--checkpoint', type=str, default='')
-    parser.add_argument('--wandb', default=True, action='store_true')
+    parser.add_argument('--wandb', default=False, action='store_true')
     parser.add_argument('--run_name', type=str, default='')
     args = parser.parse_args()
     main(args)

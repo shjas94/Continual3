@@ -249,10 +249,12 @@ def split_dataset(dataset, train_data, test_data, num_classes, num_tasks):
         test_data_splitted = [[] for _ in range(num_classes)]
         print("=================Splitting Train Dataset=================")
         for i in tqdm(range(len(train_data) - num_remainders), colour='green', ncols=15, dynamic_ncols=True):
-            train_data_splitted[train_data[i][1]].append(train_data[i])
+            if train_data[i][1] < num_classes:
+                train_data_splitted[train_data[i][1]].append(train_data[i])
         print("=================Splitting Test Dataset=================")
         for i in tqdm(range(len(test_data) - num_remainders), colour='green', ncols=15, dynamic_ncols=True):
-            test_data_splitted[test_data[i][1]].append(test_data[i])
+            if test_data[i][1] < num_classes:
+                test_data_splitted[test_data[i][1]].append(test_data[i])
         print(f"Excluded {num_remainders} classes")
         return train_data_splitted, test_data_splitted
     else:
