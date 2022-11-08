@@ -286,7 +286,7 @@ class Memory(nn.Module):
         self.new_full_en[cur_cls_idx] = torch.cat((self.new_full_en[cur_cls_idx], full_energy), dim=0)
         
         if self.new_x[cur_cls_idx].size(0) > self.cur_memory_size:
-            idx = torch.topk(energy, self.cur_memory_size, dim=0, largest=energy_mode)[1]
+            idx = torch.topk(self.new_energy[cur_cls_idx], self.cur_memory_size, dim=0, largest=energy_mode)[1]
             self.new_x[cur_cls_idx] = self.new_x[cur_cls_idx][idx]
             self.new_y[cur_cls_idx] = self.new_y[cur_cls_idx][idx]
             self.new_energy[cur_cls_idx] = self.new_energy[cur_cls_idx][idx]

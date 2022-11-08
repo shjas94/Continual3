@@ -168,10 +168,10 @@ def train_one_epoch(args,
                 cur_cd_loss = criterion(energy    = cur_energies,
                                         y_ans_idx = y_ans_idx[:cur_data_size],
                                         device    = device)
-                mem_cd_loss = criterion(energy    = mem_energies,
-                                        y_ans_idx = y_ans_idx[cur_data_size:],
-                                        device    = device)
-                # mem_cd_loss = energy_nll_loss(mem_energies, y_ans_idx[cur_data_size:])
+                # mem_cd_loss = criterion(energy    = mem_energies,
+                #                         y_ans_idx = y_ans_idx[cur_data_size:],
+                #                         device    = device)
+                mem_cd_loss = energy_nll_loss(mem_energies, y_ans_idx[cur_data_size:])
                 # loss = cur_cd_loss + 2.0*mem_cd_loss + args.lam*energy_alignment_loss(mem_energies, mem_full_energy, args.num_classes//args.num_tasks)
                 # gt_rep = torch.empty(0).to(device)
                 # for i, cls_i in enumerate(y_ans_idx[cur_data_size:]):
