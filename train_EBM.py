@@ -31,7 +31,7 @@ def trainer(args,
     model.train()
     for p in model.parameters():
         p.require_grad = True
-    if task_num != 1:
+    if task_num != 1 and args.use_memory:
         temp_task_class_set = task_class_set[0]
         for i in range(1, len(task_class_set)):
             temp_task_class_set = temp_task_class_set.union(task_class_set[i])
@@ -76,7 +76,7 @@ def trainer(args,
             memory.merge_samples()
             memory.set_cur_memory_size()
         
-        if task_num == args.num_tasks:
+        if task_num == args.num_tasks and args.use_memory:
             final_memory_x      = memory.x
             final_memory_y      = memory.y
             final_memory_energy = memory.energy
@@ -148,7 +148,6 @@ def train_one_epoch(args,
             joint_targets = torch.cat((joint_targets, mem_joint_targets), dim=0)
             y_ans_idx     = torch.cat((y_ans_idx, mem_y_ans_idx), dim=0)
             total_len    += mem_x.size(0)
-            
         energy, reps = model(aug(x, args), joint_targets)
         if args.criterion == 'nll_energy':
             if args.use_memory and task_num > 1:
@@ -356,7 +355,8 @@ def main(args):
     
     if args.use_memory:
         memory = Memory(args, args.fixed_memory_slot)
-        
+    else:
+        memory = None    
     if args.wandb:
             wandb.init(project='EBM-Continual',
                        group=args.dataset,

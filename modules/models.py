@@ -85,6 +85,9 @@ class ResNet(nn.Module):
         model_candidate = ['resnet_18', 'resnet_34', 'resnet_50', 'resnet_101', 'resnet_152']
         assert args.model in model_candidate, "Wrong Model Configuration"
         # Apply GAP right after last block
+        self.args = args
+        if args.dataset == "splitted_mnist":
+            self.conv1 = nn.Conv2d(1, 3, 1)
         self.block_cfg = {'resnet_18':[64]*2 + [128]*2 + [256]*2 + [512]*2, # output shape : 1x1x512
                           'resnet_34':[64]*3 + [128]*4 + [256]*6 + [512]*3, # output shape : 1x1x512
                           'resnet_50':[256]*3 + [512]*4 + [1024]*6 + [2048]*3, # output shape : 1x1x2048
@@ -111,6 +114,8 @@ class ResNet(nn.Module):
         return nn.Sequential(*networks)
     def forward(self, x, y):
         bs = x.size(0)
+        if self.args.dataset == "splitted_mnist":
+            x = self.conv1(x)
         z = self.extractor(x)
         z = self.avgpool(z)
         z = z.view(bs, -1)

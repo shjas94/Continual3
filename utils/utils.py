@@ -103,6 +103,13 @@ def aug(img, args):
                                             transforms.RandomApply([
                                                                      transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)
                                                                     ], p=0.5)])
+        if args.dataset == "splitted_mnist":
+            augmentations = transforms.Compose([
+                                            transforms.RandomResizedCrop(size=(args.img_size, args.img_size), scale=(0.6, 1.)),
+                                            transforms.RandomHorizontalFlip(),
+                                            # transforms.RandomVerticalFlip(),
+                                            # transforms.RandomRotation(degrees=(0, 30)),
+                                            ])
     else:
         augmentations = transforms.Compose([
                                             transforms.RandomResizedCrop(size=(args.img_size, args.img_size), scale=(0.5, 1.)),

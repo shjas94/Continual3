@@ -26,9 +26,10 @@ def calculate_avg_acc_multiple_seed(df_path='asset/acc_matrix', args=None):
     print(f"Memory Size : {args.memory_size}")
     print(f"Average Accs over Seeds  : {np.mean(np.array(accs))} +- {np.std(np.array(accs))}")
     print(f"Average Forgs over Seeds : {np.mean(np.array(forgs))} +- {np.std(np.array(forgs))}")
+    
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--memory_size', type=int, default=200, choices=(200, 500, 2000))
-    parser.add_argument('--dataset', type=str, default='cifar10', choices=('cifar10', 'cifar100', 'tinyimagenet'))
+    parser.add_argument('--memory_size', type=int, default=200, choices=(0, 200, 500, 2000, 4000))
+    parser.add_argument('--dataset', type=str, default='splitted_mnist', choices=('cifar10', 'cifar100', 'tinyimagenet', 'splitted_mnist'))
     args = parser.parse_args()
     calculate_avg_acc_multiple_seed(args=args)
